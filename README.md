@@ -13,22 +13,30 @@ the bootstrap handles the rest:
 1. **Sign in to GitHub once** — a device code appears; open the shown URL in any
    browser (your phone works), enter the code, and authorize with the GitHub
    account that has access to the app repository. No tokens to create or paste.
-2. **Fetches the latest release** of the app and hands off to the platform
-   installer, which auto-detects Terminal PC / Task Pi / Standalone Pi and prompts
-   only for what it needs (install mode, rig ID, database password, …).
-3. **Provisions unattended updates** (Terminal PC): generates a read-only
-   [deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
-   scoped to the app repository and registers it automatically, then signs your
-   personal account back out. The box updates itself from inside the app —
-   your credentials never stay on the machine.
+2. **Clones the latest release** and **provisions unattended updates**: generates
+   a read-only [deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
+   scoped to the app repository and registers it automatically.
+3. **Hands off to the lab setup wizard** — the complete lab in one run: Terminal
+   PC install (PostgreSQL, database, venv), Task Pi deployment, ML Module
+   deployment, API service, health check, and the desktop icon. The wizard asks
+   for sudo and only for what it needs (DB password, rig IDs, SSH password for
+   the Pis). Afterwards your personal account is signed back out — the box
+   updates itself with its own deploy key.
 
 ## Options
 
-Extra arguments are forwarded to the platform installer:
+Extra arguments are forwarded to the lab wizard:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/bootstrap.sh | bash -s -- --terminal --dev-mode
+# Full lab (Terminal PC + Task Pis + ML Module)
+curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/bootstrap.sh | bash -s -- --start-rig-id 01
+
+# Terminal PC only, on a test box without the rig network
+curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/bootstrap.sh | bash -s -- --skip-taskpi --skip-ml --dev-mode
 ```
+
+Wizard flags: `--skip-taskpi`, `--skip-ml`, `--include-standalone`, `--dev-mode`
+(skip rig-subnet networking on boxes without the second NIC), `--non-interactive`.
 
 Environment overrides:
 

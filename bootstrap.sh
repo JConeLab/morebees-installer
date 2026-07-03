@@ -4,15 +4,14 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/bootstrap.sh | bash
 #
-# Installs the MoreBees experiment orchestrator (RenAndStimPi) on a fresh
-# Ubuntu Terminal PC or Raspberry Pi. The application repository is PRIVATE,
-# so this script first signs you in to GitHub with your own account (a
-# one-time browser device code — no tokens to paste), then clones the latest
-# release and hands off to the platform installer, which prompts for the few
-# things it needs (install mode, rig ID, ...).
-#
-# After a Terminal PC install it also provisions a read-only DEPLOY KEY so
-# the box can receive updates unattended, then signs your account back out.
+# Sets up a complete MoreBees lab (RenAndStimPi) from one command. The app
+# repository is PRIVATE, so this script first signs you in to GitHub with your
+# own account (a one-time browser device code — no tokens to paste), clones
+# the latest release, provisions a read-only DEPLOY KEY for unattended
+# updates, and hands off to the LAB SETUP WIZARD — the single supported flow:
+# Terminal PC install + Task Pi(s) + ML Module + API service + desktop icon
+# in one run (sudo password requested at hand-off). Your account is signed
+# back out at the end.
 #
 # Environment overrides:
 #   RSO_APP_REPO   app repo slug           (default: JConeLab/RenAndStimPi)
@@ -20,8 +19,9 @@
 #   GH_TOKEN       pre-issued token for fully headless installs (skips the
 #                  browser step; needs read access to the app repo)
 #
-# All extra args are forwarded to the platform installer, e.g.:
-#   ... | bash -s -- --terminal --dev-mode
+# All extra args are forwarded to the wizard, e.g.:
+#   ... | bash -s -- --skip-taskpi --skip-ml --dev-mode     # terminal-only test box
+#   ... | bash -s -- --start-rig-id 01                      # full lab
 #
 # This file contains no secrets. Everything below runs inside main(), called
 # on the last line, so a truncated download can never execute half a script.
@@ -30,17 +30,13 @@ set -Eeuo pipefail
 APP_SLUG="${RSO_APP_REPO:-JConeLab/RenAndStimPi}"
 DID_LOGIN=0
 SSH_VERIFIED=0
-STAGE_DIR=""
+APP_DIR=""
 
 BLUE='\033[0;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 info() { echo -e "${BLUE}[bootstrap]${NC} $*"; }
 ok()   { echo -e "${GREEN}[bootstrap]${NC} $*"; }
 warn() { echo -e "${YELLOW}[bootstrap]${NC} $*" >&2; }
 die()  { echo -e "${RED}[bootstrap]${NC} $*" >&2; exit 1; }
-
-cleanup() {
-    [[ -n "$STAGE_DIR" && -d "$STAGE_DIR" ]] && rm -rf "$STAGE_DIR"
-}
 
 ensure_prereqs() {
     local missing=()
@@ -103,33 +99,39 @@ resolve_release_ref() {
     info "installing release: $REF"
 }
 
-run_platform_installer() {
-    # Shallow staging clone -- only to obtain the installer. The installer
-    # itself makes (and owns) the real clone at its canonical location.
-    STAGE_DIR=$(mktemp -d /tmp/morebees-bootstrap.XXXXXX)
-    info "fetching the installer ($REF)…"
-    # Sparse + blobless: the staging clone only needs the installer scripts,
-    # not the ~1 GB of app/ML data -- the installer itself makes the real full
-    # clone (with progress). Falls back to a full shallow clone on old git.
-    if GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --branch "$REF" \
-            --filter=blob:none --sparse \
-            "https://github.com/$APP_SLUG.git" "$STAGE_DIR/app" 2>/dev/null; then
-        GIT_TERMINAL_PROMPT=0 git -C "$STAGE_DIR/app" sparse-checkout set \
-            rso_terminal_installer scripts installers renandstimpi/rso_comm/installer
+ensure_app_clone() {
+    # Clone (or sync) the app at its canonical location, pinned to $REF.
+    # ONE full download; the wizard's installer phase reuses this checkout.
+    APP_DIR="$HOME/projects/RenAndStimPi"
+    if [[ -d "$APP_DIR/.git" ]]; then
+        info "existing checkout at $APP_DIR -- syncing to $REF"
+        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" fetch --tags origin \
+            || die "could not fetch from the app repository."
+        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" checkout --quiet --detach "$REF" \
+            || die "could not check out $REF (dirty checkout? commit/stash first)."
     else
-        warn "sparse clone unavailable -- falling back to a full download (~1 GB, progress below)"
-        rm -rf "$STAGE_DIR/app"
-        GIT_TERMINAL_PROMPT=0 git clone --progress --depth 1 --branch "$REF" \
-            "https://github.com/$APP_SLUG.git" "$STAGE_DIR/app"
+        mkdir -p "$(dirname "$APP_DIR")"
+        info "cloning the app to $APP_DIR (~600 MB download, progress below)…"
+        GIT_TERMINAL_PROMPT=0 git clone --progress "https://github.com/$APP_SLUG.git" "$APP_DIR"
+        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" checkout --quiet --detach "$REF"
     fi
 
-    [[ -f "$STAGE_DIR/app/install.sh" ]] || die "install.sh missing from $REF"
+    # The wizard flow needs the release-sync + credential fixes from v0.2.5.
+    if [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && \
+       [[ "$(printf '%s\n' v0.2.5 "$REF" | sort -V | head -1)" != "v0.2.5" ]]; then
+        die "this bootstrap requires release v0.2.5 or newer (found $REF)."
+    fi
+    [[ -f "$APP_DIR/rso_core/tools/rso_deploy_wizard.sh" ]] \
+        || die "lab wizard missing from $REF."
+}
+
+run_lab_wizard() {
     echo
-    info "handing off to the MoreBees platform installer…"
+    info "handing off to the MoreBees lab setup wizard (sudo password may be requested)…"
     echo
-    # Run as a child (NOT exec): we still provision the deploy key afterwards.
-    RSO_GIT_REF="$REF" bash "$STAGE_DIR/app/install.sh" "$@" \
-        || die "the platform installer reported an error -- see its log output above."
+    # Run as a child (NOT exec): we still sign the operator out afterwards.
+    sudo RSO_GIT_REF="$REF" bash "$APP_DIR/rso_core/tools/rso_deploy_wizard.sh" "$@" \
+        || die "the lab wizard reported an error -- see its output above."
 }
 
 provision_deploy_key() {
@@ -141,7 +143,7 @@ provision_deploy_key() {
     local setup="$repo_dir/scripts/setup_terminal_deploy_key.sh"
     local pub="$HOME/.ssh/rso_deploy_ed25519.pub"
 
-    [[ -d "$repo_dir/.git" ]] || return 0   # not a Terminal PC install
+    [[ -d "$repo_dir/.git" ]] || return 0   # clone missing (should not happen)
     if [[ ! -f "$setup" ]]; then
         warn "this release has no deploy-key setup script -- updates will use your GitHub session instead."
         return 0
@@ -194,13 +196,12 @@ main() {
         exec </dev/tty
     fi
 
-    trap cleanup EXIT
-
     ensure_prereqs
     github_signin
     resolve_release_ref
-    run_platform_installer "$@"
+    ensure_app_clone
     provision_deploy_key
+    run_lab_wizard "$@"
     finish_auth
 
     echo
