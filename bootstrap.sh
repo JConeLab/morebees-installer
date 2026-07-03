@@ -108,8 +108,20 @@ run_platform_installer() {
     # itself makes (and owns) the real clone at its canonical location.
     STAGE_DIR=$(mktemp -d /tmp/morebees-bootstrap.XXXXXX)
     info "fetching the installer ($REF)…"
-    GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --branch "$REF" \
-        "https://github.com/$APP_SLUG.git" "$STAGE_DIR/app"
+    # Sparse + blobless: the staging clone only needs the installer scripts,
+    # not the ~1 GB of app/ML data -- the installer itself makes the real full
+    # clone (with progress). Falls back to a full shallow clone on old git.
+    if GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --branch "$REF" \
+            --filter=blob:none --sparse \
+            "https://github.com/$APP_SLUG.git" "$STAGE_DIR/app" 2>/dev/null; then
+        GIT_TERMINAL_PROMPT=0 git -C "$STAGE_DIR/app" sparse-checkout set \
+            rso_terminal_installer scripts installers renandstimpi/rso_comm/installer
+    else
+        warn "sparse clone unavailable -- falling back to a full download (~1 GB, progress below)"
+        rm -rf "$STAGE_DIR/app"
+        GIT_TERMINAL_PROMPT=0 git clone --progress --depth 1 --branch "$REF" \
+            "https://github.com/$APP_SLUG.git" "$STAGE_DIR/app"
+    fi
 
     [[ -f "$STAGE_DIR/app/install.sh" ]] || die "install.sh missing from $REF"
     echo
