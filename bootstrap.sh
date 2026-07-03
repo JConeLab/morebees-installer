@@ -207,4 +207,8 @@ main() {
     ok "MoreBees $REF installed. Future updates arrive inside the app."
 }
 
-main "$@"
+# exit on the SAME parsed line as main: with `curl | bash`, bash reads this
+# script from stdin, and main() re-points stdin at the terminal for the
+# prompts -- if anything had to be read after main returns, bash would sit
+# waiting for "script" typed on the keyboard (field-tested hang).
+main "$@"; exit $?
