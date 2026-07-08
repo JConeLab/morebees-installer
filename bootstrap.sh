@@ -180,6 +180,19 @@ finish_auth() {
     fi
 }
 
+_ensure_ssh_origin() {
+    # The wizard's installer may re-clone the repo (operator answers "yes" to
+    # "Remove and re-clone?"), which resets origin to HTTPS. Guarantee the box
+    # ends with the deploy-key SSH origin no matter how the run exits -- else
+    # unattended updates break once the gh session is gone (F14, field-tested).
+    local repo="$HOME/projects/RenAndStimPi"
+    [[ -f "$HOME/.ssh/rso_deploy_ed25519" && -d "$repo/.git" ]] || return 0
+    local want="git@github-rso:$APP_SLUG.git"
+    [[ "$(git -C "$repo" remote get-url origin 2>/dev/null)" == "$want" ]] && return 0
+    info "restoring the deploy-key SSH origin (a re-clone had reset it)"
+    git -C "$repo" remote set-url origin "$want" 2>/dev/null || true
+}
+
 main() {
     echo
     echo "========================================"
@@ -201,6 +214,7 @@ main() {
     resolve_release_ref
     ensure_app_clone
     provision_deploy_key
+    trap _ensure_ssh_origin EXIT   # survive a wizard re-clone / wizard failure (F14)
     run_lab_wizard "$@"
     finish_auth
 
