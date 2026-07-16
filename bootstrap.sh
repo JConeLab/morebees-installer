@@ -169,14 +169,20 @@ provision_deploy_key() {
 }
 
 finish_auth() {
-    if [[ "$DID_LOGIN" == 1 && "$SSH_VERIFIED" == 1 ]]; then
+    if [[ "$SSH_VERIFIED" == 1 ]]; then
         # The box now updates via its own deploy key -- drop the broad
-        # personal token that was only needed for this bootstrap.
+        # personal token that was only needed for this bootstrap. F34: sign
+        # out on the REUSE path too (not just when this run logged in) -- a
+        # session left behind by an earlier aborted run otherwise lingers on
+        # the box forever, and "whose session is it" is unknowable anyway.
         gh auth logout --hostname github.com </dev/null >/dev/null 2>&1 || true
         info "signed your GitHub account out again (the box uses its own deploy key now)"
     elif [[ "$DID_LOGIN" == 1 ]]; then
         warn "keeping your GitHub session so the box stays updatable."
         warn "You can revoke it anytime at github.com/settings/applications."
+    else
+        warn "a reused GitHub session is still signed in on this box."
+        warn "Once the deploy key works, sign it out with: gh auth logout"
     fi
 }
 
