@@ -92,8 +92,14 @@ resolve_release_ref() {
     # Sets $REF to $RSO_GIT_REF or the latest stable vX.Y.Z tag.
     REF="${RSO_GIT_REF:-}"
     if [[ -z "$REF" ]]; then
-        REF=$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags "https://github.com/$APP_SLUG.git" 'v*' \
-            | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+        # Two steps with explicit errors: a transient ls-remote failure used
+        # to abort silently inside the $() under set -e, so neither message
+        # below could ever print.
+        local raw
+        raw="$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags "https://github.com/$APP_SLUG.git" 'v*')" \
+            || die "could not list release tags on $APP_SLUG (network problem? try again)."
+        REF="$(printf '%s\n' "$raw" \
+            | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
     fi
     [[ -n "$REF" ]] || die "no stable release tag (vX.Y.Z) found on $APP_SLUG"
     info "installing release: $REF"
@@ -105,9 +111,16 @@ ensure_app_clone() {
     APP_DIR="$HOME/projects/RenAndStimPi"
     if [[ -d "$APP_DIR/.git" ]]; then
         info "existing checkout at $APP_DIR -- syncing to $REF"
-        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" fetch --tags origin \
+        # --force: without it a tag moved upstream (mistag corrected at the
+        # source) makes every rerun die here with a cryptic refusal.
+        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" fetch --tags --force origin \
             || die "could not fetch from the app repository."
-        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" checkout --quiet --detach "$REF" \
+        # Prefer the freshly fetched remote ref: `checkout --detach <branch>`
+        # resolves the STALE local branch tip (fetch does not advance it), so
+        # RSO_GIT_REF=main would silently install outdated code. Tags fall
+        # through to the second form.
+        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" checkout --quiet --detach "origin/$REF" 2>/dev/null \
+            || GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" checkout --quiet --detach "$REF" \
             || die "could not check out $REF (dirty checkout? commit/stash first)."
     else
         mkdir -p "$(dirname "$APP_DIR")"
@@ -160,7 +173,18 @@ provision_deploy_key() {
     if [[ -f "$pub" ]] && gh repo deploy-key add "$pub" --repo "$APP_SLUG" \
             --title "MoreBees $(hostname) read-only ($(date +%F))" 2>/dev/null; then
         ok "deploy key registered on $APP_SLUG"
-        bash "$setup" && SSH_VERIFIED=1
+        # Guard the verify pass: an unguarded failure here (key-propagation
+        # delay beyond the setup script's retry budget, or outbound ssh :22
+        # blocked) used to abort the whole bootstrap BEFORE the wizard ran,
+        # with the key already registered. Degrade to the kept-session path
+        # instead -- finish_auth explains it.
+        if bash "$setup"; then
+            SSH_VERIFIED=1
+        else
+            warn "deploy key registered but not verified yet (GitHub propagation delay,"
+            warn "or this network blocks outbound ssh port 22). Continuing; verify later with:"
+            warn "    bash $setup"
+        fi
     else
         warn "could not register the deploy key automatically (repo-admin permission required)."
         warn "Send the public key printed above to a repository admin, then re-run:"
@@ -184,6 +208,22 @@ finish_auth() {
         warn "a reused GitHub session is still signed in on this box."
         warn "Once the deploy key works, sign it out with: gh auth logout"
     fi
+}
+
+AUTH_FINISHED=0
+
+_on_exit() {
+    # Single EXIT trap: keep the deploy-key origin (F14) and, on any early
+    # death after sign-in, tell the operator about the session left behind
+    # (every die() used to exit with the gh token still on the box, silently).
+    local rc=$?
+    _ensure_ssh_origin
+    if [[ "$rc" -ne 0 && "$AUTH_FINISHED" == 0 ]] \
+            && gh auth status --hostname github.com >/dev/null 2>&1; then
+        warn "this run ended early; your GitHub session is still signed in on this box."
+        warn "Remove it with: gh auth logout --hostname github.com"
+    fi
+    return 0
 }
 
 _ensure_ssh_origin() {
@@ -217,12 +257,13 @@ main() {
 
     ensure_prereqs
     github_signin
+    trap _on_exit EXIT   # session-left-behind note + SSH origin (F14) on ANY exit
     resolve_release_ref
     ensure_app_clone
     provision_deploy_key
-    trap _ensure_ssh_origin EXIT   # survive a wizard re-clone / wizard failure (F14)
     run_lab_wizard "$@"
     finish_auth
+    AUTH_FINISHED=1
 
     echo
     ok "MoreBees $REF installed. Future updates arrive inside the app."
