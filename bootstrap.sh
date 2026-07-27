@@ -76,7 +76,17 @@ github_signin() {
         info "code, and authorize with the GitHub account that has access to"
         info "$APP_SLUG."
         echo
-        gh auth login --hostname github.com --git-protocol https --web \
+        # Headless/SSH install: without a display, gh's browser-open shells out
+        # to xdg-open -> snap firefox, which floods the screen with snapd
+        # mount-namespace warnings and ends in "Error: no DISPLAY environment
+        # variable specified" -- alarming noise around the one step the
+        # operator must act on. Print the URL instead (field-found 2026-07-27).
+        local browser_env=()
+        if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+            info "(no graphical session detected -- the sign-in URL is printed below)"
+            browser_env=(env BROWSER=echo)
+        fi
+        "${browser_env[@]}" gh auth login --hostname github.com --git-protocol https --web \
             || die "GitHub sign-in failed. Your account needs access to $APP_SLUG."
         DID_LOGIN=1
     fi
@@ -126,7 +136,12 @@ ensure_app_clone() {
         mkdir -p "$(dirname "$APP_DIR")"
         info "cloning the app to $APP_DIR (~600 MB download, progress below)…"
         GIT_TERMINAL_PROMPT=0 git clone --progress "https://github.com/$APP_SLUG.git" "$APP_DIR"
-        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" checkout --quiet --detach "$REF"
+        # origin/<ref> first: a bare branch name here trips git's DWIM
+        # local-branch creation, which is incompatible with --detach
+        # ("fatal: '--detach' cannot be used with '-b/-B/--orphan'",
+        # field-found 2026-07-24 on the first branch-ref fresh install).
+        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" checkout --quiet --detach "origin/$REF" 2>/dev/null \
+            || GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" checkout --quiet --detach "$REF"
     fi
 
     # The wizard flow needs the release-sync + credential fixes from v0.2.5.
