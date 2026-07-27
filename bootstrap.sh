@@ -126,7 +126,12 @@ ensure_app_clone() {
         mkdir -p "$(dirname "$APP_DIR")"
         info "cloning the app to $APP_DIR (~600 MB download, progress below)…"
         GIT_TERMINAL_PROMPT=0 git clone --progress "https://github.com/$APP_SLUG.git" "$APP_DIR"
-        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" checkout --quiet --detach "$REF"
+        # origin/<ref> first: a bare branch name here trips git's DWIM
+        # local-branch creation, which is incompatible with --detach
+        # ("fatal: '--detach' cannot be used with '-b/-B/--orphan'",
+        # field-found 2026-07-24 on the first branch-ref fresh install).
+        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" checkout --quiet --detach "origin/$REF" 2>/dev/null \
+            || GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" checkout --quiet --detach "$REF"
     fi
 
     # The wizard flow needs the release-sync + credential fixes from v0.2.5.
