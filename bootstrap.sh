@@ -4,14 +4,18 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/bootstrap.sh | bash
 #
-# Sets up a complete MoreBees lab (RenAndStimPi) from one command. The app
-# repository is PRIVATE, so this script first signs you in to GitHub with your
-# own account (a one-time browser device code — no tokens to paste), clones
-# the latest release, provisions a read-only DEPLOY KEY for unattended
-# updates, and hands off to the LAB SETUP WIZARD — the single supported flow:
-# Terminal PC install + Task Pi(s) + ML Module + API service + desktop icon
-# in one run (sudo password requested at hand-off). Your account is signed
-# back out at the end.
+# Sets up MoreBees (RenAndStimPi) from one command. The app repository is
+# PRIVATE, so this script first signs you in to GitHub with your own account
+# (a one-time browser device code — no tokens to paste), clones the latest
+# release, provisions a read-only DEPLOY KEY for unattended updates, and hands
+# off to the installer for this box. Your account is signed back out at the end.
+#
+# Two roles, one bootstrap:
+#   terminal    (default on a PC) Lab setup wizard: Terminal PC install +
+#               Task Pi(s) + ML Module + API service + desktop icon in one run.
+#   standalone  (default on a Raspberry Pi, or --standalone) Single-rig Pi:
+#               GUI, local NWB data, blue-green update layout. No Terminal PC,
+#               no database, no lab subnet.
 #
 # Environment overrides:
 #   RSO_APP_REPO   app repo slug           (default: JConeLab/RenAndStimPi)
@@ -19,9 +23,11 @@
 #   GH_TOKEN       pre-issued token for fully headless installs (skips the
 #                  browser step; needs read access to the app repo)
 #
-# All extra args are forwarded to the wizard, e.g.:
+# Role flags are consumed here; every other arg is forwarded to the installer:
+#   ... | bash -s -- --standalone                           # single-rig Pi
 #   ... | bash -s -- --skip-taskpi --skip-ml --dev-mode     # terminal-only test box
 #   ... | bash -s -- --start-rig-id 01                      # full lab
+#   ... | bash -s -- --standalone --skip-phase 20           # Pi, skip the DAQ HAT lib
 #
 # This file contains no secrets. Everything below runs inside main(), called
 # on the last line, so a truncated download can never execute half a script.
@@ -31,12 +37,40 @@ APP_SLUG="${RSO_APP_REPO:-JConeLab/RenAndStimPi}"
 DID_LOGIN=0
 SSH_VERIFIED=0
 APP_DIR=""
+ROLE=""          # terminal | standalone -- resolved by parse_role
+ARGS=()          # everything left after the role flags are consumed
+STANDALONE_ENTRY="installers/standalone/install_standalone.sh"
 
 BLUE='\033[0;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 info() { echo -e "${BLUE}[bootstrap]${NC} $*"; }
 ok()   { echo -e "${GREEN}[bootstrap]${NC} $*"; }
 warn() { echo -e "${YELLOW}[bootstrap]${NC} $*" >&2; }
 die()  { echo -e "${RED}[bootstrap]${NC} $*" >&2; exit 1; }
+
+parse_role() {
+    # Consume the role flags; everything else is forwarded untouched.
+    local a
+    for a in "$@"; do
+        case "$a" in
+            --standalone) ROLE="standalone" ;;
+            --terminal)   ROLE="terminal" ;;
+            *) ARGS+=("$a") ;;
+        esac
+    done
+
+    if [[ -z "$ROLE" ]]; then
+        # A Raspberry Pi cannot run the lab wizard (it provisions a Terminal
+        # PC: PostgreSQL, the API service, the rig subnet), so defaulting to
+        # it here would be a guaranteed-wrong install. Detect and say so.
+        if grep -qi "raspberry pi" /proc/device-tree/model 2>/dev/null; then
+            ROLE="standalone"
+            info "Raspberry Pi detected -- installing the single-rig standalone setup."
+            info "Pass --terminal to install the lab wizard flow instead."
+        else
+            ROLE="terminal"
+        fi
+    fi
+}
 
 ensure_prereqs() {
     local missing=()
@@ -149,22 +183,46 @@ ensure_app_clone() {
        [[ "$(printf '%s\n' v0.2.5 "$REF" | sort -V | head -1)" != "v0.2.5" ]]; then
         die "this bootstrap requires release v0.2.5 or newer (found $REF)."
     fi
-    [[ -f "$APP_DIR/rso_core/tools/rso_deploy_wizard.sh" ]] \
-        || die "lab wizard missing from $REF."
+
+    # Assert the ENTRY POINT this role needs, rather than a second version
+    # floor: the file is the fact, and a floor would have to be bumped by hand
+    # every time the layout moves.
+    if [[ "$ROLE" == "standalone" ]]; then
+        [[ -f "$APP_DIR/$STANDALONE_ENTRY" ]] || die \
+            "release $REF does not ship the standalone installer ($STANDALONE_ENTRY).
+   Install a newer release, e.g.:  ... | bash -s -- --standalone RSO_GIT_REF=vX.Y.Z
+   or run the lab wizard flow instead with --terminal."
+    else
+        [[ -f "$APP_DIR/rso_core/tools/rso_deploy_wizard.sh" ]] \
+            || die "lab wizard missing from $REF."
+    fi
 }
 
-run_lab_wizard() {
+run_installer() {
     echo
-    info "handing off to the MoreBees lab setup wizard (sudo password may be requested)…"
-    echo
-    # Run as a child (NOT exec): we still sign the operator out afterwards.
-    sudo RSO_GIT_REF="$REF" bash "$APP_DIR/rso_core/tools/rso_deploy_wizard.sh" "$@" \
-        || die "the lab wizard reported an error -- see its output above."
+    if [[ "$ROLE" == "standalone" ]]; then
+        info "handing off to the MoreBees standalone-Pi installer (sudo password may be requested)…"
+        echo
+        # RSO_INSTALL_DIR points the installer at the checkout we already made:
+        # without it phase 30 would clone the repo a SECOND time (~600 MB on a
+        # Pi's SD card). The blue-green layout is adopted from this tree, after
+        # which the app runs from ~/rso/current and this location is incidental.
+        # Run as a child (NOT exec): we still sign the operator out afterwards.
+        sudo RSO_GIT_REF="$REF" RSO_INSTALL_DIR="$APP_DIR" \
+            bash "$APP_DIR/$STANDALONE_ENTRY" "$@" \
+            || die "the standalone installer reported an error -- see its output above."
+    else
+        info "handing off to the MoreBees lab setup wizard (sudo password may be requested)…"
+        echo
+        sudo RSO_GIT_REF="$REF" bash "$APP_DIR/rso_core/tools/rso_deploy_wizard.sh" "$@" \
+            || die "the lab wizard reported an error -- see its output above."
+    fi
 }
 
 provision_deploy_key() {
-    # Terminal PC only: give the box its own least-privilege, read-only SSH
-    # deploy key so updates never depend on a person's account. Requires the
+    # Give the box its own least-privilege, read-only SSH deploy key so updates
+    # never depend on a person's account -- equally true for a standalone Pi,
+    # whose in-app update pill runs `git ls-remote` against origin. Requires the
     # signed-in account to be a repo ADMIN to auto-register; otherwise the
     # public key is printed for an admin to add.
     local repo_dir="$HOME/projects/RenAndStimPi"
@@ -263,6 +321,9 @@ main() {
 
     [[ $(id -u) -ne 0 ]] || die "run as your normal user, not root -- it will sudo when needed."
 
+    parse_role "$@"
+    set -- "${ARGS[@]+"${ARGS[@]}"}"   # role flags consumed; forward the rest
+
     # Piped from curl, stdin is the pipe; reattach the real terminal so the
     # sign-in and installer prompts work. The subshell probe keeps a failed
     # open (no controlling terminal) from killing the script.
@@ -276,7 +337,7 @@ main() {
     resolve_release_ref
     ensure_app_clone
     provision_deploy_key
-    run_lab_wizard "$@"
+    run_installer "$@"
     finish_auth
     AUTH_FINISHED=1
 

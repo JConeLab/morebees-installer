@@ -16,16 +16,33 @@ the bootstrap handles the rest:
 2. **Clones the latest release** and **provisions unattended updates**: generates
    a read-only [deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
    scoped to the app repository and registers it automatically.
-3. **Hands off to the lab setup wizard** — the complete lab in one run: Terminal
-   PC install (PostgreSQL, database, venv), Task Pi deployment, ML Module
-   deployment, API service, health check, and the desktop icon. The wizard asks
-   for sudo and only for what it needs (DB password, rig IDs, SSH password for
-   the Pis). Afterwards your personal account is signed back out — the box
-   updates itself with its own deploy key.
+3. **Hands off to the installer for this box** — see the two roles below. It
+   asks for sudo and only for what it needs. Afterwards your personal account is
+   signed back out — the box updates itself with its own deploy key.
+
+## Two roles
+
+The bootstrap picks the right installer for the hardware, and you can always say
+so explicitly:
+
+| Role | Default on | Installs |
+|---|---|---|
+| `--terminal` | a PC | **Lab setup wizard**: Terminal PC (PostgreSQL, database, venv), Task Pi deployment, ML Module, API service, health check, desktop icon |
+| `--standalone` | a Raspberry Pi | **Single-rig Pi**: GUI, local NWB data, blue-green update layout. No Terminal PC, no database, no lab subnet |
+
+A Raspberry Pi is auto-detected, because the lab wizard provisions a Terminal PC
+(PostgreSQL, the API service, the rig subnet) and would be a guaranteed-wrong
+install there. Pass `--terminal` to override.
+
+```sh
+# Single-rig Raspberry Pi (the flag is optional on a Pi)
+curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/bootstrap.sh | bash -s -- --standalone
+```
 
 ## Options
 
-Extra arguments are forwarded to the lab wizard:
+Role flags are consumed by the bootstrap; every other argument is forwarded to
+the installer that runs:
 
 ```sh
 # Full lab (Terminal PC + Task Pis + ML Module)
@@ -37,6 +54,14 @@ curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/bo
 
 Wizard flags: `--skip-taskpi`, `--skip-ml`, `--include-standalone`, `--dev-mode`
 (skip rig-subnet networking on boxes without the second NIC), `--non-interactive`.
+
+Standalone-Pi flags: `--only <phases>`, `--skip-phase <phase>`, `--dry-run`,
+`--verbose`, `--non-interactive`. For example, to re-run just the DAQ HAT
+library phase:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/bootstrap.sh | bash -s -- --standalone --only 20
+```
 
 Environment overrides:
 
