@@ -110,14 +110,16 @@ github_signin() {
         info "code, and authorize with the GitHub account that has access to"
         info "$APP_SLUG."
         echo
-        # Headless/SSH install: without a display, gh's browser-open shells out
-        # to xdg-open -> snap firefox, which floods the screen with snapd
-        # mount-namespace warnings and ends in "Error: no DISPLAY environment
-        # variable specified" -- alarming noise around the one step the
-        # operator must act on. Print the URL instead (field-found 2026-07-27).
+        # Always print the sign-in URL instead of launching a local browser.
+        # Headless boxes hit the snapd/xdg-open wall (field-found 2026-07-27);
+        # a DESKTOP Pi is no better: gh opened the rig's own Chromium, which
+        # flooded the terminal with its stderr (--no-decommit-pooled-pages
+        # spam, Vulkan warnings) and stole the screen (field-found
+        # 2026-09-04). The prompt already says any device's browser works.
+        # An operator who really wants a local open can export BROWSER.
         local browser_env=()
-        if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
-            info "(no graphical session detected -- the sign-in URL is printed below)"
+        if [[ -z "${BROWSER:-}" ]]; then
+            info "(the sign-in URL is printed below -- open it on any device)"
             browser_env=(env BROWSER=echo)
         fi
         "${browser_env[@]}" gh auth login --hostname github.com --git-protocol https --web \
@@ -135,6 +137,22 @@ github_signin() {
 resolve_release_ref() {
     # Sets $REF to $RSO_GIT_REF or the latest stable vX.Y.Z tag.
     REF="${RSO_GIT_REF:-}"
+    if [[ -n "$REF" && ! "$REF" =~ ^[0-9a-f]{7,40}$ ]]; then
+        # Validate an explicit pin BEFORE any work: a typo'd tag (the
+        # classic: 0.4.7 for v0.4.7, field-found 2026-09-04) otherwise
+        # survives until checkout and dies there with a cryptic "could not
+        # check out". Raw SHAs are exempt -- ls-remote cannot list them.
+        if ! GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code \
+                "https://github.com/$APP_SLUG.git" \
+                "refs/tags/$REF" "refs/heads/$REF" >/dev/null 2>&1; then
+            if GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code \
+                    "https://github.com/$APP_SLUG.git" \
+                    "refs/tags/v$REF" >/dev/null 2>&1; then
+                die "RSO_GIT_REF=$REF does not exist -- did you mean v$REF? (release tags carry the v prefix)"
+            fi
+            die "RSO_GIT_REF=$REF does not exist on $APP_SLUG (release tags look like vX.Y.Z)"
+        fi
+    fi
     if [[ -z "$REF" ]]; then
         # Two steps with explicit errors: a transient ls-remote failure used
         # to abort silently inside the $() under set -e, so neither message
