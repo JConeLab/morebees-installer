@@ -45,7 +45,21 @@ BLUE='\033[0;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC
 info() { echo -e "${BLUE}[bootstrap]${NC} $*"; }
 ok()   { echo -e "${GREEN}[bootstrap]${NC} $*"; }
 warn() { echo -e "${YELLOW}[bootstrap]${NC} $*" >&2; }
-die()  { echo -e "${RED}[bootstrap]${NC} $*" >&2; exit 1; }
+die()  {
+    echo -e "${RED}[bootstrap]${NC} $*" >&2
+    # Paste-able failure report: what a maintainer needs to debug from a
+    # chat message instead of a photo of scrollback.
+    {
+        echo "---- bootstrap failure report (copy/paste this) ----"
+        echo "time:  $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+        echo "step:  ${BOOTSTRAP_STEP:-startup}"
+        echo "ref:   ${RSO_GIT_REF:-<latest>}"
+        echo "model: $(tr -d '\0' </proc/device-tree/model 2>/dev/null || uname -m)"
+        echo "os:    $( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || uname -sr)"
+        echo "----------------------------------------------------"
+    } >&2
+    exit 1
+}
 
 parse_role() {
     # Consume the role flags; everything else is forwarded untouched.
@@ -73,6 +87,7 @@ parse_role() {
 }
 
 ensure_prereqs() {
+    BOOTSTRAP_STEP="prerequisites"
     local missing=()
     for cmd in git curl; do
         command -v "$cmd" >/dev/null || missing+=("$cmd")
@@ -101,6 +116,7 @@ ensure_prereqs() {
 }
 
 github_signin() {
+    BOOTSTRAP_STEP="github-sign-in"
     if gh auth status --hostname github.com >/dev/null 2>&1; then
         info "already signed in to GitHub -- reusing that session"
     else
@@ -122,7 +138,7 @@ github_signin() {
             info "(the sign-in URL is printed below -- open it on any device)"
             browser_env=(env BROWSER=echo)
         fi
-        "${browser_env[@]}" gh auth login --hostname github.com --git-protocol https --web \
+        "${browser_env[@]+"${browser_env[@]}"}" gh auth login --hostname github.com --git-protocol https --web \
             || die "GitHub sign-in failed. Your account needs access to $APP_SLUG."
         DID_LOGIN=1
     fi
@@ -135,6 +151,7 @@ github_signin() {
 }
 
 resolve_release_ref() {
+    BOOTSTRAP_STEP="resolve-release"
     # Sets $REF to $RSO_GIT_REF or the latest stable vX.Y.Z tag.
     REF="${RSO_GIT_REF:-}"
     if [[ -n "$REF" && ! "$REF" =~ ^[0-9a-f]{7,40}$ ]]; then
@@ -168,6 +185,7 @@ resolve_release_ref() {
 }
 
 ensure_app_clone() {
+    BOOTSTRAP_STEP="clone-app"
     # Clone (or sync) the app at its canonical location, pinned to $REF.
     # ONE full download; the wizard's installer phase reuses this checkout.
     APP_DIR="$HOME/projects/RenAndStimPi"
@@ -217,6 +235,7 @@ ensure_app_clone() {
 }
 
 run_installer() {
+    BOOTSTRAP_STEP="run-installer"
     echo
     if [[ "$ROLE" == "standalone" ]]; then
         info "handing off to the MoreBees standalone-Pi installer (sudo password may be requested)…"
@@ -238,6 +257,7 @@ run_installer() {
 }
 
 provision_deploy_key() {
+    BOOTSTRAP_STEP="deploy-key"
     # Give the box its own least-privilege, read-only SSH deploy key so updates
     # never depend on a person's account -- equally true for a standalone Pi,
     # whose in-app update pill runs `git ls-remote` against origin. Requires the
