@@ -38,7 +38,8 @@ The application repository is **private**. On a new computer the bootstrap:
    terminal role after the lab wizard has finished (the wizard may still need
    your sign-in).
 4. **Hands off to the installer for this computer**, which asks for sudo and only
-   for what it needs, and then tells you plainly how the install ended.
+   for what it needs. At the end the bootstrap says plainly how the install
+   ended.
 
 ## Two roles
 
@@ -58,9 +59,10 @@ install there. Pass `--terminal` to override.
 
 The bootstrap treats a Pi as installed when any of these exist: `~/rso`,
 `/etc/rso/role`, `/usr/local/bin/rso-standalone-gui` or
-`/usr/local/bin/renandstimpi-gui`. On such a Pi it never changes `~/projects` or
-`~/rso`, and it signs in to GitHub only when the Pi's own deploy key cannot fetch
-the release it needs.
+`/usr/local/bin/renandstimpi-gui`. On such a Pi the bootstrap itself never
+changes `~/projects` or `~/rso` (the installer it starts does what you ask of
+it), and it signs in to GitHub only when the Pi's own deploy key cannot fetch the
+release it needs.
 
 - **`--only <phases>`** re-runs those phases with the installed release's own
   installer, from `~/rso/current` (or from the install folder named in
@@ -153,9 +155,10 @@ true: the deploy key reached GitHub during the run, and the app runs from
 - **What the token can do.** GitHub's device flow gives `gh` a token with the
   scopes `repo`, `read:org` and `gist` (gh's minimum). `repo` grants read and
   write access to every repository your account can reach, so the token is kept
-  on the computer for as short a time as possible: on a Raspberry Pi it is
-  removed before the installer runs. The bootstrap never asks gh's git question,
-  so the token does not get the `workflow` scope.
+  on the computer for as short a time as possible: with the standalone role it is
+  removed as soon as the deploy key works, before the installer runs. The
+  bootstrap never asks gh's git question, so the token does not get the
+  `workflow` scope.
 - **Signing out is not revoking.** Signing out removes the token from the
   computer (and gh's credential-helper lines from `~/.gitconfig`), but the token
   stays valid on GitHub until you revoke it, or until GitHub revokes it after a
@@ -231,6 +234,9 @@ A commit cannot contain its own hash, so the pin always follows the code:
    that commit; `scripts/pin.sh --check` confirms the result.
 3. Open a pull request titled `release: pin <short sha>` with only that change,
    and merge it. From then on the one-liner runs the new bootstrap.
+
+Between steps 1 and 3 this README already describes the new bootstrap while the
+line still runs the previous one, so keep that window short.
 
 An older pin must keep working with newer app releases, because some people still
 copy an old line. To undo a release, pin the previous commit again.
