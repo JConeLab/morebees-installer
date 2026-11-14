@@ -20,7 +20,7 @@ bootstrap reaches people only when this pin moves (see
 [Releasing the bootstrap](#releasing-the-bootstrap)).
 
 To pass options, put them after `bash "$mb"` at the end of the line, for example
-`bash "$mb" --standalone --only camera`. To install a particular release, put the
+`bash "$mb" --standalone --only 90`. To install a particular release, put the
 variable before it: `RSO_GIT_REF=v0.5.0 bash "$mb"`.
 
 The application repository is **private**. On a new computer the bootstrap:
@@ -57,21 +57,40 @@ install there. Pass `--terminal` to override.
 
 ## A Raspberry Pi that already has MoreBees
 
-The bootstrap treats a Pi as installed when any of these exist: `~/rso`,
-`/etc/rso/role`, `/usr/local/bin/rso-standalone-gui` or
-`/usr/local/bin/renandstimpi-gui`. On such a Pi the bootstrap itself never
-changes `~/projects` or `~/rso` (the installer it starts does what you ask of
-it), and it signs in to GitHub only when the Pi's own deploy key cannot fetch the
-release it needs.
+The bootstrap looks for an earlier install: `~/rso`, `/etc/rso/role`,
+`/usr/local/bin/rso-standalone-gui` or `/usr/local/bin/renandstimpi-gui`. A
+computer whose `/etc/rso/role` names another role (a Terminal PC, for example) is
+not reinstalled as a standalone Pi.
+
+A Pi is **provisioned** when `~/rso/current` exists and `/etc/rso/role` says
+`standalone`, the installer's own rule; phase 70 sets up both at its cutover. A Pi
+with an earlier install that is not provisioned is an install that stopped part
+way. The bootstrap says "An unfinished MoreBees install was found; finishing it."
+and takes the same steps as on a new Pi: it signs in, syncs
+`~/projects/RenAndStimPi` to the release and runs that release's installer, which
+finishes the install.
+
+On a provisioned Pi the bootstrap itself never changes `~/projects` or `~/rso`
+(the installer it starts does what you ask of it), and it signs in to GitHub only
+when the Pi's own deploy key cannot fetch the release it needs.
 
 - **`--only <phases>`** re-runs those phases with the installed release's own
   installer, from `~/rso/current` (or from the install folder named in
-  `/usr/local/bin/renandstimpi-gui` when `~/rso/current` is missing), with no
-  sign-in and no clone. Phases 20 (`daqhats`), 70 (`blue_green`), 75 (`camera`)
-  and 90 (`hardware`) stop or replace what a running MoreBees uses, so for them
-  the bootstrap first checks that no MoreBees window, task or hardware setup is
-  running and that the camera recorder has no session open; otherwise it stops
-  and says what is running.
+  `/usr/local/bin/renandstimpi-gui` when `~/rso/current` has no installer), with
+  no sign-in and no clone. When neither has an installer, it stops with nothing
+  changed. Give phases by number, for example `--only 90`: names such as
+  `camera` need an installer from v0.5.0-rc.1 or later, and an older installer
+  runs nothing for a phase it does not know (v0.4.9 has no names and no phase
+  75), while still ending with status 0. `--help` shows the installed release's
+  phases.
+- On any Pi with an earlier install, phases 20 (`daqhats`), 70 (`blue_green`), 75
+  (`camera`) and 90 (`hardware`) stop or replace what a running MoreBees uses, so
+  before an `--only` run of one of them the bootstrap checks that no MoreBees
+  window, task or hardware setup is running and that the camera recorder has no
+  session open; otherwise it stops and says what is running.
+- **`--help` or `--dry-run`** without `--only` runs the installed release's
+  installer with your arguments, as you and not as root: it prints its help or
+  its plan and changes nothing.
 - **A full run** (no `--only`) reinstalls. The bootstrap picks the release:
   `RSO_GIT_REF` when set (a release tag, not a branch or a commit, and never older
   than the installed release unless you add `--allow-older-release`); otherwise
@@ -83,7 +102,8 @@ release it needs.
   itself and passes your options on unchanged (`--reinstall`,
   `--confirm-delete=...`, `--non-interactive`, `--inventory`, `--skip-phase`,
   `--verbose`, `--allow-older-release`). The temporary copy is removed when the
-  run ends.
+  run ends; when the installer, which runs as root, left files there that you
+  cannot remove, the bootstrap removes the copy with sudo.
 - Releases whose installer cannot keep or delete data (the first that can is
   planned for v0.5.0) are not reinstalled: the bootstrap explains, lists the
   newest release tags and stops with nothing changed. Your recorded sessions are
@@ -106,7 +126,8 @@ Standalone-Pi flags: `--only <phases>`, `--skip-phase <phase>`, `--dry-run`,
 `--verbose`, `--non-interactive`, and on releases that can reinstall,
 `--reinstall keep|delete`, `--confirm-delete=<name>`, `--inventory`,
 `--allow-older-release`. For example, to re-run only the DAQ HAT library phase:
-`bash "$mb" --standalone --only 20`.
+`bash "$mb" --standalone --only 20`. Phases go by number; names (`daqhats`,
+`camera`) work with installers from v0.5.0-rc.1 on.
 
 Environment variables (put them before `bash "$mb"`):
 
