@@ -18,11 +18,13 @@
 # installer (terminal). The token stays valid on GitHub until it is revoked at
 # https://github.com/settings/applications.
 #
-# On a Raspberry Pi that already has MoreBees (standalone role), it signs in only
-# when the Pi's own deploy key cannot fetch the release, and it never changes
-# ~/projects or ~/rso. --only re-runs phases with the installed release's own
-# installer; a full run hands off to the target release's installer, run from a
-# temporary local copy, and that installer asks what to do with the data.
+# On a provisioned Raspberry Pi (standalone role: ~/rso/current exists and
+# /etc/rso/role says standalone), it signs in only when the Pi's own deploy key
+# cannot fetch the release, and it never changes ~/projects or ~/rso. --only
+# re-runs phases with the installed release's own installer; a full run hands off
+# to the target release's installer, run from a temporary local copy, and that
+# installer asks what to do with the data. A Pi whose first install stopped
+# before phase 70's cutover is finished with the steps of a new Pi.
 #
 # Two roles, one bootstrap:
 #   terminal    (default on a PC) Lab setup wizard: Terminal PC install +
@@ -87,7 +89,8 @@ ARGS=()              # everything left after the role flags are consumed
 LOG_FILE=""
 INSTALLER_LOG=""
 BOOTSTRAP_STEP="startup"
-INSTALLED=0          # standalone role: a MoreBees install was found
+INSTALLED=0          # standalone role: a MoreBees install was found ...
+PROVISIONED=0        # ... and it is finished: ~/rso/current and role standalone
 CUR="$HOME/rso/current"
 CUR_OK=0             # ~/rso/current resolves to a git checkout
 O=""                 # the installed release tag, empty when unknown
@@ -580,7 +583,8 @@ run_end() {
 # --- An installed standalone Pi ----------------------------------------------
 
 detect_installed() {
-    # Read-only: any one of these means MoreBees was installed here before.
+    # Read-only: any one of these means an install was at least started here.
+    # read_installed_facts then tells a finished install from an unfinished one.
     if [[ -e "$HOME/rso" || -L "$HOME/rso" || -e "$ROLE_FILE" \
           || -e "$BIN_DIR/rso-standalone-gui" || -e "$BIN_DIR/renandstimpi-gui" ]]; then
         INSTALLED=1
@@ -622,7 +626,15 @@ read_installed_facts() {
         where="$(readlink "$CUR" 2>/dev/null || echo "$CUR")"
     fi
     INSTALL_DIR="$(_baked_install_dir || true)"
-    _log "installed: ~/rso/current -> $where, tag ${O:-none}, install folder ${INSTALL_DIR:-none}"
+    # The installer's own rule (install_standalone.sh, refuse_if_provisioned):
+    # a Pi is provisioned once ~/rso/current exists and /etc/rso/role says
+    # standalone, which phase 70 writes at its cutover. Other markers without
+    # both are an install that stopped part way. check_installed_role has
+    # already refused any other role.
+    if [[ "$CUR_OK" == 1 && -e "$ROLE_FILE" ]]; then
+        PROVISIONED=1
+    fi
+    _log "installed: ~/rso/current -> $where, tag ${O:-none}, install folder ${INSTALL_DIR:-none}, provisioned $PROVISIONED"
 }
 
 _args_have() {
@@ -1205,19 +1217,26 @@ main() {
             BOOTSTRAP_STEP="installed-pi"
             check_installed_role
             read_installed_facts
-            info "MoreBees is already installed on this Pi${O:+ ($O)}; the bootstrap changes nothing in ~/projects or ~/rso."
-            if _has_only "$@"; then
-                [[ -z "${RSO_GIT_REF:-}" ]] \
-                    || warn "RSO_GIT_REF is ignored with --only on an installed Pi: --only re-runs phases of the installed release."
-                if _needs_busy_check "$(_only_list "$@")"; then
-                    busy_check
-                fi
-                if installed_only_select; then
+            if _has_only "$@" && _needs_busy_check "$(_only_list "$@")"; then
+                busy_check
+            fi
+            if [[ "$PROVISIONED" == 1 ]]; then
+                info "MoreBees is already installed on this Pi${O:+ ($O)}; the bootstrap changes nothing in ~/projects or ~/rso."
+                if _has_only "$@"; then
+                    [[ -z "${RSO_GIT_REF:-}" ]] \
+                        || warn "RSO_GIT_REF is ignored with --only on an installed Pi: --only re-runs phases of the installed release."
+                    installed_only_select || refuse \
+                        "The installed release in ~/rso/current has no standalone installer to run --only with." \
+                        "Nothing was changed."
                     installed_only_run "$@"
                 fi
-                info "no installed MoreBees release here to run --only from; installing as on a new Pi."
-            else
                 installed_full_run "$@"
+            fi
+            # Stopped before phase 70's cutover: the steps of a new Pi finish it,
+            # as running the one-liner again always did.
+            info "An unfinished MoreBees install was found; finishing it."
+            if [[ -n "$INSTALL_DIR" && "$INSTALL_DIR" != "$HOME/projects/RenAndStimPi" ]]; then
+                warn "The unfinished install used $INSTALL_DIR; this run installs into ~/projects/RenAndStimPi."
             fi
         fi
     fi

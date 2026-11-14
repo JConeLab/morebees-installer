@@ -285,6 +285,31 @@ fresh_sandbox() {  # a new Pi; the app repository has releases up to v0.4.9
     sgit clone -q --bare "$CUR_SB/src" "$CUR_SB/remote.git"
 }
 
+write_gui_wrapper() {  # write_gui_wrapper <install folder>: phase 55's renandstimpi-gui
+    {
+        echo '#!/bin/bash'
+        echo '# MoreBees GUI (written by installers/standalone/modules/55-cli.sh).'
+        echo 'if [ -x /usr/local/bin/rso-standalone-gui ]; then'
+        echo '    exec /usr/local/bin/rso-standalone-gui "$@"'
+        echo 'fi'
+        echo "source \"$1/venv/bin/activate\""
+        echo "cd \"$1\" || exit 1"
+        echo "export PYTHONPATH=\"$1\""
+        echo 'exec python -m renandstimpi.gui_launcher.app "$@"'
+    } > "$CUR_SB/usr/local/bin/renandstimpi-gui"
+}
+
+unfinished_sandbox() {  # a Pi whose first install stopped after phase 55, before phase 70
+    local h
+    fresh_sandbox
+    h="$CUR_SB/home"
+    mkdir -p "$h/projects"
+    sgit clone -q "$CUR_SB/remote.git" "$h/projects/RenAndStimPi"
+    sgit -C "$h/projects/RenAndStimPi" remote set-url origin "https://github.com/JConeLab/RenAndStimPi.git"
+    sgit -C "$h/projects/RenAndStimPi" checkout -q --detach v0.4.9
+    write_gui_wrapper "$h/projects/RenAndStimPi"
+}
+
 installed_sandbox() {  # installed_sandbox <tag> <its installer can reinstall: yes|no>
     # A Pi installed at <tag> by the bootstrap: ~/rso/current and the install
     # folder ~/projects/RenAndStimPi, both fetching through the deploy key,
@@ -302,17 +327,7 @@ installed_sandbox() {  # installed_sandbox <tag> <its installer can reinstall: y
     ln -s "$h/rso/releases/$1" "$h/rso/current"
     sgit clone -q "git@github-rso:JConeLab/RenAndStimPi.git" "$h/projects/RenAndStimPi"
     sgit -C "$h/projects/RenAndStimPi" checkout -q --detach "$1"
-    {
-        echo '#!/bin/bash'
-        echo '# MoreBees GUI (written by installers/standalone/modules/55-cli.sh).'
-        echo 'if [ -x /usr/local/bin/rso-standalone-gui ]; then'
-        echo '    exec /usr/local/bin/rso-standalone-gui "$@"'
-        echo 'fi'
-        echo "source \"$h/projects/RenAndStimPi/venv/bin/activate\""
-        echo "cd \"$h/projects/RenAndStimPi\" || exit 1"
-        echo "export PYTHONPATH=\"$h/projects/RenAndStimPi\""
-        echo 'exec python -m renandstimpi.gui_launcher.app "$@"'
-    } > "$CUR_SB/usr/local/bin/renandstimpi-gui"
+    write_gui_wrapper "$h/projects/RenAndStimPi"
     printf '#!/bin/bash\nexec "$HOME/rso/current/scripts/runtime/launch.sh" "$@"\n' \
         > "$CUR_SB/usr/local/bin/rso-standalone-gui"
     echo standalone > "$CUR_SB/etc/rso/role"
@@ -714,6 +729,55 @@ else
     t_fail "scripts/pin.sh <commit>"
 fi
 rm -rf "$pin_dir"
+
+echo "21. an install that stopped before phase 70 is finished, not reinstalled"
+unfinished_sandbox
+run_bootstrap -- --standalone
+check "only the wrapper: exit 0" rc_is 0
+check "says it finishes an unfinished install" out_has "An unfinished MoreBees install was found; finishing it."
+check "no reinstall card, no claim that nothing changes" \
+    eval 'out_hasnt "Reinstalling it needs a release" && out_hasnt "changes nothing in ~/projects"'
+check "the steps of a new Pi: sign-in, then the newest release's installer" \
+    eval 'before "gh auth login" "installer ran" && call_has "RSO_GIT_REF=v0.4.9"'
+check "... into the install folder" call_has "RSO_INSTALL_DIR=$CUR_SB/home/projects/RenAndStimPi"
+done_sb
+unfinished_sandbox
+mkdir -p "$CUR_SB/home/rso/releases" "$CUR_SB/home/rso/shared/data"
+echo standalone > "$CUR_SB/etc/rso/role"
+run_bootstrap -- --standalone
+check "the wrapper, ~/rso and the role but no ~/rso/current: finished too" \
+    eval 'rc_is 0 && out_has "An unfinished MoreBees install was found" && event "installer ran"'
+done_sb
+unfinished_sandbox
+mkdir -p "$CUR_SB/home/rso/shared/data"
+run_bootstrap -- --standalone --only 40
+check "--only on an unfinished Pi takes the same steps" \
+    eval 'rc_is 0 && event "gh auth login" && call_has "arg=--only" && call_has "arg=40"'
+done_sb
+unfinished_sandbox
+echo "4321 python3 -m renandstimpi.gui_launcher.app" > "$CUR_SB/ps.txt"
+run_bootstrap -- --standalone --only 20
+check "--only 20 on an unfinished Pi still refuses while MoreBees runs" \
+    eval 'rc_is 3 && out_has "MoreBees is in use" && no_event "gh auth login"'
+done_sb
+new_sandbox stub
+echo terminal > "$CUR_SB/etc/rso/role"
+run_bootstrap -- --standalone
+check "a role file alone that names another role: exit 3" \
+    eval 'rc_is 3 && out_has "set up as a MoreBees terminal" && no_event "gh auth"'
+done_sb
+installed_sandbox v0.4.9 no
+run_bootstrap -- --standalone
+check "a provisioned Pi still takes the reinstall path" \
+    eval 'rc_is 3 && out_has "already installed on this Pi (v0.4.9)" && out_has "Reinstalling it needs a release" && out_hasnt "unfinished"'
+done_sb
+installed_sandbox v0.4.9 no
+rm "$CUR_SB/home/rso/current/installers/standalone/install_standalone.sh"
+rm -rf "$CUR_SB/home/projects"
+run_bootstrap -- --standalone --only 40
+check "--only on a provisioned Pi with no installer to run: exit 3, nothing installed" \
+    eval 'rc_is 3 && out_has "no standalone installer to run --only with" && no_event "gh auth login" && test ! -e "$CUR_SB/home/projects"'
+done_sb
 
 echo
 echo "== $PASS passed, $FAIL failed =="
