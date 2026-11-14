@@ -1137,7 +1137,9 @@ installed_full_run() {
     info "what to do with the data on this Pi (sudo password may be requested)…"
     echo
     local rc=0
-    _run_installer_cmd sudo RSO_GIT_REF="$REF" MB_REINSTALL_SOURCE=bootstrap \
+    # PYTHONDONTWRITEBYTECODE: the installer runs as root from BUILD, and root's
+    # caches there would keep the operator from removing it (_remove_build).
+    _run_installer_cmd sudo RSO_GIT_REF="$REF" MB_REINSTALL_SOURCE=bootstrap PYTHONDONTWRITEBYTECODE=1 \
         bash "$BUILD/$STANDALONE_ENTRY" "$@" || rc=$?
     finish_auth
     run_end "$rc"
@@ -1161,9 +1163,7 @@ _on_exit() {
     local rc=$?
     set +e
     trap '' HUP INT TERM
-    if [[ -n "$BUILD" && -d "$BUILD" ]]; then
-        case "$BUILD" in "$HOME"/.cache/morebees/build.*) rm -rf "$BUILD" ;; esac
-    fi
+    _remove_build
     [[ -z "$APP_DIR" ]] || _ensure_ssh_origin
     if [[ "$rc" -ne 0 && "$SIGNIN_REACHED" == 1 && "$AUTH_FINISHED" == 0 && "$SIGNED_OUT" == 0 ]] \
             && command -v gh >/dev/null 2>&1 \
@@ -1177,6 +1177,30 @@ _on_exit() {
         info "Bootstrap log: $LOG_FILE"
     fi
     return 0
+}
+
+# shellcheck disable=SC2329  # run by a trap
+_remove_build() {
+    # The temporary copy, and only it: a folder mktemp made directly under
+    # ~/.cache/morebees. The installer ran as root from it, so when the
+    # operator cannot remove it, root's files are inside and sudo removes it.
+    [[ -n "$BUILD" && -d "$BUILD" ]] || return 0
+    local base="$HOME/.cache/morebees/build." rest
+    rest="${BUILD#"$base"}"
+    if [[ "$rest" == "$BUILD" || -z "$rest" || "$rest" == */* ]]; then
+        _log "temporary copy not removed: $BUILD is not a folder made under ~/.cache/morebees"
+        return 0
+    fi
+    rm -rf "$BUILD" 2>/dev/null
+    if [[ ! -e "$BUILD" ]]; then
+        _log "temporary copy removed: $BUILD"
+        return 0
+    fi
+    if sudo rm -rf -- "$BUILD" 2>/dev/null && [[ ! -e "$BUILD" ]]; then
+        _log "temporary copy removed with sudo (it held files owned by root): $BUILD"
+    else
+        warn "could not remove the temporary copy $BUILD; remove it with: sudo rm -rf -- $BUILD"
+    fi
 }
 
 # shellcheck disable=SC2329  # run by a trap

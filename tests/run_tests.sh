@@ -49,7 +49,7 @@ before()    {  # before <first> <second>: both events happened, in this order
     a="$(line_of "$CUR_SB/events.log" "$1")"; b="$(line_of "$CUR_SB/events.log" "$2")"
     [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]
 }
-done_sb() { rm -rf "$CUR_SB"; CUR_SB=""; }
+done_sb() { chmod -R u+w "$CUR_SB" 2>/dev/null; rm -rf "$CUR_SB"; CUR_SB=""; }
 
 # git as the harness uses it: the sandbox's HOME (its url.insteadOf rules), and
 # an author for the stand-in repository's commits.
@@ -109,6 +109,12 @@ while [ $# -gt 0 ]; do
 done
 echo "sudo $*" >> "$STUB_DIR/events.log"
 case "$1" in apt-get|install|tee|chmod) echo "stub sudo refuses: $*" >&2; exit 1 ;; esac
+if [ "$1" = rm ]; then
+    # Root could remove what the operator cannot: give the operator the rights.
+    for a in "$@"; do
+        case "$a" in /*) [ ! -e "$a" ] || chmod -R u+w "$a" 2>/dev/null ;; esac
+    done
+fi
 keep=("PATH=$PATH" "HOME=$HOME" "STUB_DIR=$STUB_DIR")
 for v in $(env | sed -n 's/^\(STUB_[A-Z0-9_]*\)=.*/\1/p'); do keep+=("$v=${!v}"); done
 exec env -i "${keep[@]}" "${assigns[@]}" "$@"
@@ -189,10 +195,16 @@ fi
     echo "RSO_GIT_REF=${RSO_GIT_REF-<unset>}"
     echo "RSO_INSTALL_DIR=${RSO_INSTALL_DIR-<unset>}"
     echo "MB_REINSTALL_SOURCE=${MB_REINSTALL_SOURCE-<unset>}"
+    echo "PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE-<unset>}"
     for a in "$@"; do echo "arg=$a"; done
 } > "$STUB_DIR/installer_call.txt"
 echo "installer ran" >> "$STUB_DIR/events.log"
 echo "INSTALLER-OUTPUT-MARKER"
+if [ "${STUB_ROOT_FILES:-0}" = 1 ]; then
+    # What root leaves in the tree it ran from: a folder the operator cannot empty.
+    tree="$(cd "$(dirname "$0")/../.." && pwd)"
+    mkdir -p "$tree/__pycache__" && : > "$tree/__pycache__/m.pyc" && chmod 555 "$tree/__pycache__"
+fi
 if [ "${STUB_CUT_OUTPUT:-0}" = 1 ]; then
     # The terminal goes away: end the reader of the bootstrap's output pipe and
     # wait until a write fails (SIGPIPE is ignored, so it fails with EPIPE, as a
@@ -844,6 +856,28 @@ for pair in "129|Interrupted. Run the same command again" "5|stopped with status
         eval 'grep -qF "$text" "$log" && grep -q "bootstrap exit status: $code" "$log"'
     done_sb
 done
+
+echo "24. the temporary copy goes even when the installer left root's files in it"
+if [ "$(/usr/bin/id -u)" = 0 ]; then
+    echo "  skip - run as root, so nothing in the copy is out of the operator's reach"
+else
+    installed_sandbox v0.4.9 no
+    add_release v0.5.0 yes
+    run_bootstrap STUB_ROOT_FILES=1 -- --standalone --reinstall keep
+    check "exit 0" rc_is 0
+    check "the hand-off asks Python for no bytecode" call_has "PYTHONDONTWRITEBYTECODE=1"
+    check "the operator could not remove it, so sudo did" \
+        eval 'grep -qF "sudo rm -rf -- $CUR_SB/home/.cache/morebees/build." "$CUR_SB/events.log"'
+    check "the temporary copy is gone" no_build_left
+    check "the log says how it went" eval 'grep -q "temporary copy removed with sudo" "$(the_log)"'
+    done_sb
+fi
+installed_sandbox v0.4.9 no
+add_release v0.5.0 yes
+run_bootstrap -- --standalone --reinstall keep
+check "an ordinary run removes the copy without sudo" \
+    eval 'no_build_left && no_event "sudo rm" && grep -q "temporary copy removed: " "$(the_log)"'
+done_sb
 
 echo
 echo "== $PASS passed, $FAIL failed =="
