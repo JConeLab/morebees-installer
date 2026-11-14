@@ -546,7 +546,7 @@ _closing_update_line() {
 _installer_failed() {
     local rc="$1" what="the standalone installer"
     [[ "$ROLE" == standalone ]] || what="the lab wizard"
-    echo -e "${RED}[bootstrap]${NC} $what stopped with status $rc -- see its output above." >&2 || true
+    echo -e "${RED}[bootstrap]${NC} $what stopped with status $rc; see its output above." >&2 || true
     _log "ERROR $what stopped with status $rc"
     _failure_report
 }
@@ -1022,7 +1022,7 @@ resolve_reinstall_target() {
         case "$REF_KIND" in
             tag) ;;
             branch) refuse "RSO_GIT_REF=$t is a branch: a reinstall installs release tags only. Nothing was changed." ;;
-            missing_v) refuse "RSO_GIT_REF=$t does not exist -- did you mean v$t? Nothing was changed." ;;
+            missing_v) refuse "RSO_GIT_REF=$t does not exist. Did you mean v$t? Nothing was changed." ;;
             *) refuse "RSO_GIT_REF=$t does not exist on $APP_SLUG (release tags look like vX.Y.Z). Nothing was changed." ;;
         esac
         if [[ -n "$O" ]] && semver_cmp "$t" "$O"; then
