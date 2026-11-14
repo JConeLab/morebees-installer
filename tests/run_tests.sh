@@ -779,6 +779,26 @@ check "--only on a provisioned Pi with no installer to run: exit 3, nothing inst
     eval 'rc_is 3 && out_has "no standalone installer to run --only with" && no_event "gh auth login" && test ! -e "$CUR_SB/home/projects"'
 done_sb
 
+echo "22. --help and --dry-run on a provisioned Pi ask the installed release's installer"
+installed_sandbox v0.4.9 no
+add_release v0.5.0 yes
+run_bootstrap -- --standalone --help
+check "--help: exit 0 with the installer's help" eval 'rc_is 0 && out_has "--only <k[,k...]>"'
+check "--help: no sudo, no sign-in, no reinstall card" \
+    eval 'no_event "sudo " && no_event "gh auth" && out_hasnt "Reinstalling it needs a release"'
+check "--help: no temporary copy was made" test ! -e "$CUR_SB/home/.cache/morebees"
+done_sb
+installed_sandbox v0.4.9 no
+add_release v0.5.0 yes
+run_bootstrap -- --standalone --dry-run --verbose
+check "--dry-run: ~/rso/current's installer ran as the operator" \
+    eval 'rc_is 0 && call_has "installer=$CUR_SB/home/rso/current/installers/standalone/install_standalone.sh" && no_event "sudo "'
+check "--dry-run: the arguments, without --standalone" \
+    test "$(grep '^arg=' "$CUR_SB/installer_call.txt" | tr '\n' ' ')" = "arg=--dry-run arg=--verbose "
+check "--dry-run: no sign-in and no temporary copy" \
+    eval 'no_event "gh auth" && test ! -e "$CUR_SB/home/.cache/morebees"'
+done_sb
+
 echo
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

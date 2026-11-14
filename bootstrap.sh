@@ -653,6 +653,32 @@ _has_only() {
     return 1
 }
 
+_has_info_flag() {
+    # --help or --dry-run: the installer only prints, needing no root and no network.
+    local a
+    for a in "$@"; do
+        case "$a" in --help|-h|--dry-run) return 0 ;; esac
+    done
+    return 1
+}
+
+installed_info_run() {
+    # --help or --dry-run without --only on a provisioned Pi: the installed
+    # release's installer answers as the operator, before any target is chosen,
+    # any sign-in or any copy. Its status is passed on as it is.
+    BOOTSTRAP_STEP="installed-info"
+    local rc=0
+    [[ -f "$CUR/$STANDALONE_ENTRY" ]] || refuse \
+        "The installed release in ~/rso/current has no standalone installer to ask." \
+        "Nothing was changed."
+    info "asking the installed release's installer (${O:-untagged}, ~/rso/current); nothing is changed."
+    echo || true
+    _log "running: bash $CUR/$STANDALONE_ENTRY $*"
+    bash "$CUR/$STANDALONE_ENTRY" "$@" || rc=$?
+    _log "installer exit status: $rc"
+    exit "$rc"
+}
+
 _only_list() {
     # The --only value(s) among the arguments, comma-joined.
     local prev="" a out=""
@@ -1229,6 +1255,9 @@ main() {
                         "The installed release in ~/rso/current has no standalone installer to run --only with." \
                         "Nothing was changed."
                     installed_only_run "$@"
+                fi
+                if _has_info_flag "$@"; then
+                    installed_info_run "$@"
                 fi
                 installed_full_run "$@"
             fi
