@@ -1196,7 +1196,9 @@ _remove_build() {
         _log "temporary copy removed: $BUILD"
         return 0
     fi
-    if sudo rm -rf -- "$BUILD" 2>/dev/null && [[ ! -e "$BUILD" ]]; then
+    # sudo -n: this runs on exit, often long after the last sudo, and must never
+    # stop to ask for a password; the warning below gives the command instead.
+    if sudo -n rm -rf -- "$BUILD" 2>/dev/null && [[ ! -e "$BUILD" ]]; then
         _log "temporary copy removed with sudo (it held files owned by root): $BUILD"
     else
         warn "could not remove the temporary copy $BUILD; remove it with: sudo rm -rf -- $BUILD"
