@@ -1,0 +1,27 @@
+MoreBees standalone-Pi installer v2.0.0
+
+  sudo bash installers/standalone/install_standalone.sh [flags]
+
+Flags:
+  --only <k[,k...]>    run only these phases (allow-list, wins over --skip-phase)
+  --skip-phase <k>     skip a phase (repeatable)
+  --dry-run            print the plan and exit, changing nothing
+  --verbose            stream command output instead of the spinner
+  --non-interactive    never prompt; take defaults
+  --help               this text
+
+Phases:
+  10   System Dependencies
+  15   GUI Fonts
+  20   MCC DAQ HAT Library
+  30   Release Checkout
+  40   Python Environment
+  50   Desktop Integration
+  55   CLI Wrappers
+  60   Data Directory
+  70   Blue-Green Update Layout
+  80   Deploy Key
+  90   Hardware Setup
+
+Env: RSO_GIT_REF=vX.Y.Z (release to install), RSO_ALLOW_REPROVISION=1
+     (override the already-provisioned refusal), MB_VERBOSE=1, MB_UI=plain

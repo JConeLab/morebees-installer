@@ -182,6 +182,7 @@ cat > "$TEMPLATES/installer" <<'EOF'
 #!/usr/bin/env bash
 # stand-in for the MoreBees standalone installer, release @TAG@
 if [ "${1:-}" = "--help" ]; then
+    if [ -n "@HELP@" ]; then cat "@HELP@"; exit 0; fi
     echo "Flags:"
     echo "  --only <k[,k...]>    run only these phases"
     if [ "@CAN@" = yes ]; then
@@ -284,11 +285,19 @@ EOF
     chmod +x "$CUR_SB"/bin/*
 }
 
-add_release() {  # add_release <tag> <its installer can reinstall: yes|no>
-    local tag="$1" can="$2" src="$CUR_SB/src"
+# The real --help output of two released installers, for the capability check
+# (_installer_can_reinstall). Made from the app repository's tags with:
+#   git archive <tag> installers/standalone rso_terminal_installer/lib | tar -x -C <dir>
+#   bash <dir>/installers/standalone/install_standalone.sh --help
+# v0.4.9 is 737737d2, v0.5.0-rc.2 is 15c6bc81.
+HELP_V049="$HERE/tests/fixtures/install_standalone_help_v0.4.9.txt"
+HELP_RC2="$HERE/tests/fixtures/install_standalone_help_v0.5.0-rc.2.txt"
+
+add_release() {  # add_release <tag> <its installer can reinstall: yes|no> [<--help text file>]
+    local tag="$1" can="$2" help="${3:-}" src="$CUR_SB/src"
     [ -d "$src/.git" ] || sgit init -q "$src"
     mkdir -p "$src/installers/standalone" "$src/rso_core/tools" "$src/scripts"
-    sed -e "s/@TAG@/$tag/g" -e "s/@CAN@/$can/g" "$TEMPLATES/installer" \
+    sed -e "s/@TAG@/$tag/g" -e "s/@CAN@/$can/g" -e "s|@HELP@|$help|g" "$TEMPLATES/installer" \
         > "$src/installers/standalone/install_standalone.sh"
     sed -e "s/@TAG@/$tag/g" "$TEMPLATES/wizard" > "$src/rso_core/tools/rso_deploy_wizard.sh"
     cp "$TEMPLATES/deploykey" "$src/scripts/setup_terminal_deploy_key.sh"
@@ -333,14 +342,14 @@ unfinished_sandbox() {  # a Pi whose first install stopped after phase 55, befor
     write_gui_wrapper "$h/projects/RenAndStimPi"
 }
 
-installed_sandbox() {  # installed_sandbox <tag> <its installer can reinstall: yes|no>
+installed_sandbox() {  # installed_sandbox <tag> <its installer can reinstall: yes|no> [<--help text file>]
     # A Pi installed at <tag> by the bootstrap: ~/rso/current and the install
     # folder ~/projects/RenAndStimPi, both fetching through the deploy key,
     # which works; the wrappers and the role file of phases 50, 55 and 70.
     local h
     new_sandbox real
     add_release v0.4.8 no
-    add_release "$1" "$2"
+    add_release "$1" "$2" "${3:-}"
     sgit clone -q --bare "$CUR_SB/src" "$CUR_SB/remote.git"
     ln -s "$CUR_SB/remote.git" "$CUR_SB/alias.git"
     h="$CUR_SB/home"
@@ -877,6 +886,39 @@ add_release v0.5.0 yes
 run_bootstrap -- --standalone --reinstall keep
 check "an ordinary run removes the copy without sudo" \
     eval 'no_build_left && no_event "sudo rm" && grep -q "temporary copy removed: " "$(the_log)"'
+done_sb
+
+echo "25. a successful hand-off forwards the reinstall options unchanged"
+installed_sandbox v0.4.9 no
+add_release v0.5.0 yes
+run_bootstrap -- --standalone --reinstall delete --confirm-delete=rig-01 --inventory \
+    --skip-phase 20 --allow-older-release --non-interactive
+check "exit 0, to v0.5.0" eval 'rc_is 0 && call_has "RSO_GIT_REF=v0.5.0"'
+check "every option, in order, without --standalone" \
+    test "$(grep '^arg=' "$CUR_SB/installer_call.txt" | tr '\n' ' ')" = "arg=--reinstall arg=delete arg=--confirm-delete=rig-01 arg=--inventory arg=--skip-phase arg=20 arg=--allow-older-release arg=--non-interactive "
+done_sb
+installed_sandbox v0.5.0 yes
+add_release v0.5.1 yes
+sgit -C "$CUR_SB/home/rso/current" fetch -q --tags origin
+sgit -C "$CUR_SB/home/rso/current" checkout -q --detach v0.5.1
+run_bootstrap RSO_GIT_REF=v0.5.0 -- --standalone --allow-older-release --reinstall keep
+check "an older release with --allow-older-release: handed off to it" \
+    eval 'rc_is 0 && call_has "release=v0.5.0" && call_has "RSO_GIT_REF=v0.5.0"'
+check "... with --allow-older-release forwarded" \
+    test "$(grep '^arg=' "$CUR_SB/installer_call.txt" | tr '\n' ' ')" = "arg=--allow-older-release arg=--reinstall arg=keep "
+done_sb
+
+echo "26. the capability check against the real --help text of released installers"
+installed_sandbox v0.4.9 no "$HELP_V049"
+add_release v0.5.0-rc.2 no "$HELP_RC2"
+run_bootstrap RSO_GIT_REF=v0.5.0-rc.2 -- --standalone --reinstall keep
+check "v0.5.0-rc.2's real usage text: not a reinstall-capable installer" \
+    eval 'rc_is 3 && out_has "Reinstalling it needs a release" && no_event "installer ran"'
+done_sb
+installed_sandbox v0.4.9 no "$HELP_V049"
+run_bootstrap -- --standalone
+check "v0.4.9's real usage text: not the target, and no newer release: the card" \
+    eval 'rc_is 3 && out_has "MoreBees v0.4.9 is installed on this Pi." && no_event "installer ran"'
 done_sb
 
 echo
