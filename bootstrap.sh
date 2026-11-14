@@ -139,12 +139,12 @@ bootstrap log: $LOG_FILE"
     fi
     report="$report
 ----------------------------------------------------"
-    printf '%s\n' "$report" >&2
+    printf '%s\n' "$report" >&2 || true
     _log "$report"
 }
 
 die() {
-    echo -e "${RED}[bootstrap]${NC} $*" >&2
+    echo -e "${RED}[bootstrap]${NC} $*" >&2 || true
     _log "ERROR $*"
     _failure_report
     exit 1
@@ -546,7 +546,7 @@ _closing_update_line() {
 _installer_failed() {
     local rc="$1" what="the standalone installer"
     [[ "$ROLE" == standalone ]] || what="the lab wizard"
-    echo -e "${RED}[bootstrap]${NC} $what stopped with status $rc -- see its output above." >&2
+    echo -e "${RED}[bootstrap]${NC} $what stopped with status $rc -- see its output above." >&2 || true
     _log "ERROR $what stopped with status $rc"
     _failure_report
 }
@@ -555,7 +555,9 @@ _installer_failed() {
 run_end() {
     local rc="$1" what="MoreBees${REF:+ $REF}"
     BOOTSTRAP_STEP="run-installer"
-    echo
+    # Every write from here on is best effort: after a hang-up the terminal is
+    # gone, and a failed write must not turn the installer's status into 1.
+    echo || true
     if [[ "$ROLE" == standalone ]]; then
         case "$rc" in
             0) ok "$what is installed." ;;

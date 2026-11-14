@@ -193,6 +193,17 @@ fi
 } > "$STUB_DIR/installer_call.txt"
 echo "installer ran" >> "$STUB_DIR/events.log"
 echo "INSTALLER-OUTPUT-MARKER"
+if [ "${STUB_CUT_OUTPUT:-0}" = 1 ]; then
+    # The terminal goes away: end the reader of the bootstrap's output pipe and
+    # wait until a write fails (SIGPIPE is ignored, so it fails with EPIPE, as a
+    # write to a hung-up terminal fails with EIO).
+    kill "$(cat "$STUB_DIR/reader.pid")" 2>/dev/null
+    n=0
+    while [ "$n" -lt 200 ]; do
+        if ! echo probe 2>/dev/null; then echo "output cut" >> "$STUB_DIR/events.log"; break; fi
+        sleep 0.05; n=$((n + 1))
+    done
+fi
 if [ "${STUB_MAKE_LAYOUT:-0}" = 1 ]; then
     # What phase 70 leaves behind: ~/rso/current with the checkout's origin.
     rel="$HOME/rso/releases/@TAG@"
@@ -347,6 +358,28 @@ run_bootstrap() {  # run_bootstrap [VAR=value ...] -- [bootstrap arguments ...]
           ${envs[@]+"${envs[@]}"} "$BASH" "$SCRIPT" "$@" \
           <"$CUR_SB/stdin.txt" >"$CUR_SB/out.txt" 2>&1 )
     echo $? > "$CUR_SB/rc.txt"
+}
+
+run_bootstrap_cut() {  # run_bootstrap, with the output going away during the installer
+    # stdout and stderr go to a pipe whose reader the installer stand-in ends
+    # (STUB_CUT_OUTPUT=1), so every write after the installer fails.
+    local envs=() reader
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
+    if [ "${1:-}" = "--" ]; then shift; fi
+    mkfifo "$CUR_SB/out.fifo"
+    cat "$CUR_SB/out.fifo" > "$CUR_SB/out.txt" &
+    reader=$!
+    echo "$reader" > "$CUR_SB/reader.pid"
+    ( trap '' PIPE
+      cd "$CUR_SB/home" && env -i HOME="$CUR_SB/home" PATH="$CUR_SB/bin:/usr/bin:/bin" \
+          STUB_DIR="$CUR_SB" STUB_REAL_GIT="$REAL_GIT" TERM=dumb GIT_CONFIG_NOSYSTEM=1 \
+          GIT_SSH_COMMAND=false MB_BIN_DIR="$CUR_SB/usr/local/bin" \
+          MB_ROLE_FILE="$CUR_SB/etc/rso/role" MB_RIGCAM_ENV="$CUR_SB/etc/rso/rigcam.env" \
+          STUB_CUT_OUTPUT=1 ${envs[@]+"${envs[@]}"} "$BASH" "$SCRIPT" "$@" \
+          <"$CUR_SB/stdin.txt" >"$CUR_SB/out.fifo" 2>&1 )
+    echo $? > "$CUR_SB/rc.txt"
+    kill "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
 }
 
 snapshot() {  # snapshot <checkout>: HEAD, origin and working-tree state
@@ -798,6 +831,19 @@ check "--dry-run: the arguments, without --standalone" \
 check "--dry-run: no sign-in and no temporary copy" \
     eval 'no_event "gh auth" && test ! -e "$CUR_SB/home/.cache/morebees"'
 done_sb
+
+echo "23. a terminal that goes away during the installer does not change the exit status"
+for pair in "129|Interrupted. Run the same command again" "5|stopped with status 5" "0|is installed."; do
+    code="${pair%%|*}"; text="${pair#*|}"
+    fresh_sandbox
+    run_bootstrap_cut STUB_INSTALLER_RC="$code" -- --standalone
+    log="$(the_log)"
+    check "installer exit $code, output gone: the writes after it failed" event "output cut"
+    check "installer exit $code, output gone: bootstrap exits $code" rc_is "$code"
+    check "installer exit $code, output gone: the log has the outcome and the status" \
+        eval 'grep -qF "$text" "$log" && grep -q "bootstrap exit status: $code" "$log"'
+    done_sb
+done
 
 echo
 echo "== $PASS passed, $FAIL failed =="
