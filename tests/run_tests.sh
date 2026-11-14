@@ -662,6 +662,30 @@ else
     t_fail "SemVer precedence"
 fi
 
+echo "20. the README's pin"
+pin_rc=0; bash "$HERE/scripts/pin.sh" --check >/dev/null 2>&1 || pin_rc=$?
+if [ "$pin_rc" = 0 ]; then
+    t_ok "README's SHA-256 matches bootstrap.sh at the pinned commit"
+elif [ "$pin_rc" = 2 ]; then
+    echo "  skip - the pinned commit is not in this clone (shallow?)"
+else
+    t_fail "scripts/pin.sh --check failed (exit $pin_rc)"
+fi
+pin_dir="$(mktemp -d)"
+cp "$HERE/README.md" "$pin_dir/README.md"
+head_commit="$("$REAL_GIT" -C "$HERE" rev-parse HEAD)"
+head_sum="$("$REAL_GIT" -C "$HERE" show "HEAD:bootstrap.sh" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)"
+urls_before="$(grep -c 'morebees-installer/[0-9a-f]\{40\}/bootstrap.sh' "$pin_dir/README.md")"
+if PIN_README="$pin_dir/README.md" bash "$HERE/scripts/pin.sh" HEAD >/dev/null 2>&1 \
+        && [ "$(grep -c "morebees-installer/$head_commit/bootstrap.sh" "$pin_dir/README.md")" = "$urls_before" ] \
+        && grep -q "$head_sum" "$pin_dir/README.md" \
+        && PIN_README="$pin_dir/README.md" bash "$HERE/scripts/pin.sh" --check >/dev/null 2>&1; then
+    t_ok "scripts/pin.sh rewrites every pinned URL and the checksum"
+else
+    t_fail "scripts/pin.sh <commit>"
+fi
+rm -rf "$pin_dir"
+
 echo
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
