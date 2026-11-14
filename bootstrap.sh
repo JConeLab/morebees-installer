@@ -108,9 +108,10 @@ _log() {
     [[ -n "$LOG_FILE" ]] || return 0
     printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>/dev/null || true
 }
-info() { echo -e "${BLUE}[bootstrap]${NC} $*"; _log "INFO  $*"; }
-ok()   { echo -e "${GREEN}[bootstrap]${NC} $*"; _log "OK    $*"; }
-warn() { echo -e "${YELLOW}[bootstrap]${NC} $*" >&2; _log "WARN  $*"; }
+# A closed terminal (a dropped SSH session) must not change the exit status.
+info() { echo -e "${BLUE}[bootstrap]${NC} $*" || true; _log "INFO  $*"; }
+ok()   { echo -e "${GREEN}[bootstrap]${NC} $*" || true; _log "OK    $*"; }
+warn() { echo -e "${YELLOW}[bootstrap]${NC} $*" >&2 || true; _log "WARN  $*"; }
 
 _failure_report() {
     # Paste-able failure report: what a maintainer needs to debug from a
@@ -171,8 +172,10 @@ log_init() {
     fi
     chmod 600 "$file" 2>/dev/null || true
     LOG_FILE="$file"
-    if [[ -f "$0" ]]; then
-        sum="$( (sha256sum "$0" 2>/dev/null || shasum -a 256 "$0" 2>/dev/null) | cut -d' ' -f1)"
+    # The file this run came from, when it is one (curl | bash has none).
+    local self="${BASH_SOURCE[0]:-}"
+    if [[ -n "$self" && -f "$self" ]] && grep -qxF 'main "$@"; exit $?' "$self" 2>/dev/null; then
+        sum="$( (sha256sum "$self" 2>/dev/null || shasum -a 256 "$self" 2>/dev/null) | cut -d' ' -f1)"
     fi
     _log "MoreBees bootstrap: role=$ROLE user=$(id -un 2>/dev/null || true) bootstrap.sh sha256=${sum:-unknown (piped)}"
     _log "arguments for the installer: ${ARGS[*]+"${ARGS[*]}"}"

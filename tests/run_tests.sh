@@ -437,6 +437,16 @@ check "closing lines: installed, updates in the app" \
     eval 'out_has "MoreBees v0.4.9 is installed." && out_has "Future updates arrive inside the app."'
 done_sb
 
+echo "7b. a token from GH_TOKEN is not reported as signed out"
+fresh_sandbox
+touch "$CUR_SB/gh_session"; ln -s "$CUR_SB/remote.git" "$CUR_SB/https.git"
+run_bootstrap GH_TOKEN=test-token -- --standalone
+check "exit 0" rc_is 0
+check "gh auth logout is not run against an environment token" no_event "gh auth logout"
+check "says the token came from the environment" out_has "came from GH_TOKEN or GITHUB_TOKEN"
+check "gh's credential-helper lines still removed" gh_helpers_gone
+done_sb
+
 echo "8. terminal: the session stays until the wizard has finished"
 fresh_sandbox
 run_bootstrap -- --terminal
@@ -478,6 +488,14 @@ for pair in "0|MoreBees v0.4.9 is installed." \
     fi
     done_sb
 done
+
+echo "10b. terminal role: a status the wizard does not define gets the failure report"
+fresh_sandbox
+run_bootstrap STUB_INSTALLER_RC=2 -- --terminal
+check "wizard exit 2: bootstrap exits 2" rc_is 2
+check "wizard exit 2: failure report, not \"installed with problems\"" \
+    eval 'out_has "the lab wizard stopped with status 2" && out_hasnt "installed with problems"'
+done_sb
 
 echo "11. the bootstrap's own log"
 fresh_sandbox
@@ -609,6 +627,17 @@ check "the deploy key provisioned against the temporary copy only" \
     eval 'grep -q "deploy-key setup --repo $CUR_SB/home/.cache/morebees/build\." "$CUR_SB/events.log"'
 check "signed out before the installer ran" before "gh auth logout" "installer ran"
 check "the target installer ran" call_has "RSO_GIT_REF=v0.5.0"
+done_sb
+
+echo "16b. a refused reinstall after this run's own sign-in takes the token away"
+installed_sandbox v0.4.9 no
+add_release v0.5.0-rc.2 no
+rm "$CUR_SB/alias.git"
+run_bootstrap RSO_GIT_REF=v0.5.0-rc.2 -- --standalone
+check "exit 3 with the guidance card" eval 'rc_is 3 && out_has "Reinstalling it needs a release"'
+check "signed in, then out again" before "gh auth login" "gh auth logout"
+check "the deploy key was not provisioned for a refused run" no_event "deploy-key setup"
+check "the tags could not be listed through the deploy key: said so" out_has "could not be listed"
 done_sb
 
 echo "17. a full run refuses targets that are not newer release tags"
