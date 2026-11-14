@@ -1,0 +1,69 @@
+name: CI
+
+# Pull-request and push gate for the bootstrap. Every step whose name ends in
+# "(gate)" fails its job when it fails; a gate also runs after an earlier gate
+# in the same job failed (if: !cancelled()), so one red gate hides no other.
+#
+# The one-liner runs bootstrap.sh as the operator and hands off to an installer
+# that runs as root, so nothing reaches main without both jobs green: every
+# tracked shell file must parse and be ShellCheck-clean at every severity, and
+# tests/run_tests.sh must pass. The tests stub gh, sudo and the installers and
+# run real git against a stand-in app repository, so they need no network, no
+# root and no secrets.
+#
+# This repository is public, so Actions minutes cost nothing here; both jobs run
+# on GitHub's standard Ubuntu runner.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A pull request cancels its own superseded runs. A push to main falls back to its
+# unique run_id, so the next merge never cancels the previous merge's run.
+concurrency:
+  group: ci-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  shell-lint:
+    name: bash -n + shellcheck (gate)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pinned, so CI and contributors read the same findings (the runner
+      # image's own ShellCheck is older and changes with the image).
+      - name: Install ShellCheck 0.11.0
+        id: shellcheck
+        run: python -m pip install "shellcheck-py==0.11.0.1"
+
+      - name: bash -n every tracked shell script (gate)
+        run: git ls-files '*.sh' | xargs -n1 bash -n
+
+      - name: shellcheck every tracked shell script (gate)
+        if: ${{ !cancelled() && steps.shellcheck.outcome == 'success' }}
+        run: |
+          shellcheck --version
+          git ls-files '*.sh' | xargs shellcheck
+
+  tests:
+    name: tests/run_tests.sh (gate)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The pin check reads bootstrap.sh at the commit the README names,
+          # which is older than the commit under test.
+          fetch-depth: 0
+
+      - name: Bootstrap test suite (gate)
+        run: bash tests/run_tests.sh
