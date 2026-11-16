@@ -998,7 +998,7 @@ reinstall_guidance_card() {
     local tags installed="MoreBees is installed on this Pi (its version could not be read)."
     [[ -z "$O" ]] || installed="MoreBees $O is installed on this Pi."
     warn "$installed Reinstalling it needs a release"
-    warn "whose installer can keep or delete your data (the first is planned for v0.5.0)."
+    warn "whose installer can keep or delete your data (the first is planned for v0.5.1)."
     warn "Run again with RSO_GIT_REF=<a newer tag> when one exists."
     warn "To repair one part without reinstalling: --only <phase>."
     warn "Your recorded sessions are in ~/rso/shared/data: never remove ~/rso."
