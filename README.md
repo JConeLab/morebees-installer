@@ -8,14 +8,14 @@ Ubuntu Terminal PC or a Raspberry Pi.
 Paste this line into a terminal on the computer you are setting up:
 
 ```sh
-mb="$(mktemp)" && curl -fsSL -o "$mb" https://raw.githubusercontent.com/JConeLab/morebees-installer/2bb432ebc2e9125538d212dcbd79a18b33228dff/bootstrap.sh && echo "da637b0f0484b2e7b0b06b9a65dc6b7424c750f3582f00688d7a22df515d2ba7  $mb" | sha256sum -c --quiet - && bash "$mb"
+mb="$(mktemp)" && curl -fsSL -o "$mb" https://raw.githubusercontent.com/JConeLab/morebees-installer/6a034382e1749009fd15d781b45dfcb63d45379e/bootstrap.sh && echo "1c937f12069bca11af434e3e965d27260300719a36e4b2aa7aeda33fc6057405  $mb" | sha256sum -c --quiet - && bash "$mb"
 ```
 
 The line downloads `bootstrap.sh` at one fixed commit of this repository, checks
 it against its SHA-256 and runs it only when the check passes. Whatever is pushed
 to this repository later, the line runs exactly the file it names: commit
-`2bb432ebc2e9125538d212dcbd79a18b33228dff`, SHA-256
-`da637b0f0484b2e7b0b06b9a65dc6b7424c750f3582f00688d7a22df515d2ba7`. A new
+`6a034382e1749009fd15d781b45dfcb63d45379e`, SHA-256
+`1c937f12069bca11af434e3e965d27260300719a36e4b2aa7aeda33fc6057405`. A new
 bootstrap reaches people only when this pin moves (see
 [Releasing the bootstrap](#releasing-the-bootstrap)).
 
