@@ -1,0 +1,30 @@
+MoreBees standalone-Pi installer v2.0.0
+
+  sudo bash installers/standalone/install_standalone.sh [flags]
+
+Flags:
+  --only <k[,k...]>    run only these phases, by number or name (allow-list,
+                       wins over --skip-phase), e.g. --only camera
+  --skip-phase <k>     skip a phase, by number or name (repeatable)
+  --dry-run            print the plan and exit, changing nothing
+  --verbose            stream command output instead of the spinner
+  --non-interactive    never prompt; take defaults
+  --help               this text
+
+Phases (--only and --skip-phase take either column):
+  10   pi_system    System Dependencies
+  15   fonts        GUI Fonts
+  20   daqhats      MCC DAQ HAT Library
+  22   realtime     Real-Time Priority (opto engine)
+  30   release      Release Checkout
+  40   python_env   Python Environment
+  50   desktop      Desktop Integration
+  55   cli          CLI Wrappers
+  60   data         Data Directory
+  70   blue_green   Blue-Green Update Layout
+  75   camera       Camera Recorder
+  80   deploy_key   Deploy Key
+  90   hardware     Hardware Setup
+
+Env: RSO_GIT_REF=vX.Y.Z (release to install), RSO_ALLOW_REPROVISION=1
+     (override the already-provisioned refusal), MB_VERBOSE=1, MB_UI=plain
