@@ -25,19 +25,23 @@ variable before it: `RSO_GIT_REF=v0.5.0 bash "$mb"`.
 
 The application repository is **private**. On a new computer the bootstrap:
 
-1. **Signs you in to GitHub once.** It prints a one-time code and a URL; open the
+1. **Checks the NVMe power settings first** on a Raspberry Pi 5 that starts from
+   an NVMe drive. When it adds them to the boot line, it stops so that you can
+   restart the Pi, and you run the same line again (see
+   [A Raspberry Pi 5 that starts from an NVMe drive](#a-raspberry-pi-5-that-starts-from-an-nvme-drive)).
+2. **Signs you in to GitHub once.** It prints a one-time code and a URL; open the
    URL in any browser (your phone works), enter the code and authorize with the
    GitHub account that has access to the app repository. Nothing else is asked:
    no git question, no Enter, and no browser opens on the computer itself.
-2. **Clones the latest release** and **provisions unattended updates**: it
+3. **Clones the latest release** and **provisions unattended updates**: it
    generates a read-only
    [deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
    scoped to the app repository and registers it.
-3. **Signs you out again** as soon as the computer can use its own deploy key:
+4. **Signs you out again** as soon as the computer can use its own deploy key:
    for the standalone role (a Raspberry Pi) before the installer starts, for the
    terminal role after the lab wizard has finished (the wizard may still need
    your sign-in).
-4. **Hands off to the installer for this computer**, which asks for sudo and only
+5. **Hands off to the installer for this computer**, which asks for sudo and only
    for what it needs. At the end the bootstrap says plainly how the install
    ended.
 
@@ -110,11 +114,85 @@ when the Pi's own deploy key cannot fetch the release it needs.
   in `~/rso/shared/data`: never remove `~/rso`.
 - A computer whose `/etc/rso/role` names another role (a Terminal PC, for
   example) is not reinstalled as a standalone Pi.
+- On a Raspberry Pi 5 that starts from an NVMe drive, the
+  [NVMe power check](#a-raspberry-pi-5-that-starts-from-an-nvme-drive) runs
+  before an `--only` run or a reinstall hands off.
+
+## A Raspberry Pi 5 that starts from an NVMe drive
+
+Some NVMe drives disconnect from a Raspberry Pi 5 under heavy writes, such as an
+install: the kernel logs `nvme nvme0: controller is down`, and the Pi cannot
+write to its disk until it restarts. Three kernel settings on the boot line,
+`/boot/firmware/cmdline.txt`, turn off the drive's and the PCIe link's power
+saving; with them, the two drives seen to disconnect so far ran an install, a
+restart and a session without a storage error:
+
+```text
+nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off
+```
+
+They are not Raspberry Pi defaults, and with them the drive draws a little more
+power and runs warmer, so the bootstrap does not add them everywhere. On a
+Raspberry Pi 5 whose root filesystem is on an NVMe drive and whose boot line lacks
+any of them, the bootstrap:
+
+- **adds the missing ones by itself** when the drive is a model known to
+  disconnect (so far the Kingston KC3000 and the Lexar NM620) or when this boot's
+  kernel log already shows `controller is down`, and prints one line: what it
+  added, why, and how to undo it;
+- **otherwise asks**, and the answer is No unless you type `y`. With no terminal
+  to ask on it changes nothing; `--add-nvme-power-settings` at the end of the
+  command adds them without asking.
+
+On an SD card, a USB drive, any other Pi model, or a boot line that already has
+all three settings, nothing is changed and nothing is asked. A boot line that
+gives one of them another value (`pcie_aspm=force`, for example) is left to you.
+
+**How the line changes.** Only the missing settings are added, at the end of the
+line. The rest of the line stays byte for byte, and it stays one line, ending
+with a newline only if it did before. A copy of the old line is kept as
+`/boot/firmware/cmdline.txt.before-morebees-nvme`. An earlier copy is never
+overwritten: when it holds another line, the new copy gets the date and time in
+its name. The new line is written to a temporary file in the same folder, checked
+to read back as exactly the old line plus the settings, and moved into place. The
+bootstrap's log has the line before and after, both SHA-256 sums and the exact
+undo command. If any of these checks fails, nothing is changed, the bootstrap
+says why, and the install carries on.
+
+**Restart, then run the same line again.** The kernel reads the boot line only
+when the Pi starts, so after a change the bootstrap stops with status 5, before
+the GitHub sign-in and the clone: restart the Pi (`sudo reboot`) and run the same
+command again. When the settings are on the boot line but the running system did
+not start with them, the bootstrap says so and carries on.
+
+**When it runs.** On a new Pi, or one whose install stopped part way, it runs
+first, before the sign-in. On a provisioned Pi it runs before an `--only` run or
+a reinstall hands off, after the checks that stop with nothing changed (another
+role on the computer, or MoreBees in use). `--help` and `--dry-run` skip it.
+
+**To undo** the settings, copy the old line back and restart (the bootstrap's log
+names the copy when it has a dated name):
+
+```sh
+sudo cp /boot/firmware/cmdline.txt.before-morebees-nvme /boot/firmware/cmdline.txt
+sudo reboot
+```
+
+When a lab finds another model that disconnects, a part of its model name, as
+`/sys/block/nvme0n1/device/model` gives it, goes into `NVME_DROP_MODELS` in
+`bootstrap.sh` through a pull request, and reaches every lab with the next
+bootstrap release (see [Releasing the bootstrap](#releasing-the-bootstrap)).
+Until then, `--add-nvme-power-settings` adds the settings on that drive.
 
 ## Options
 
-Role flags are consumed by the bootstrap; every other argument is forwarded to the
-installer that runs.
+The role flags and `--add-nvme-power-settings` are the bootstrap's own; every
+other argument is forwarded to the installer that runs.
+
+Bootstrap flag: `--add-nvme-power-settings` adds the NVMe power settings on a
+Raspberry Pi 5 that starts from an NVMe drive without asking, also when there is
+no terminal to ask on, for example `bash "$mb" --add-nvme-power-settings` (see
+[A Raspberry Pi 5 that starts from an NVMe drive](#a-raspberry-pi-5-that-starts-from-an-nvme-drive)).
 
 Wizard flags (Terminal PC): `--skip-taskpi`, `--skip-ml`, `--include-standalone`,
 `--dev-mode` (skip rig-subnet networking on computers without the second network
@@ -139,7 +217,8 @@ Environment variables (put them before `bash "$mb"`):
 
 ## How a run ends
 
-The bootstrap exits with the installer's own status and says what it means:
+The bootstrap exits with the installer's own status, or with its own when it
+stops before the installer runs, and says what it means:
 
 | Status | Meaning |
 |---|---|
@@ -147,6 +226,7 @@ The bootstrap exits with the installer's own status and says what it means:
 | 2 | Installed with problems; the installer's log names them. |
 | 3 | Stopped before installing; nothing was changed. The message above says why. |
 | 4 | The reinstall did not finish, and the previous installation was put back. |
+| 5 | The bootstrap added the NVMe power settings to the boot line and stopped before installing. Restart the Pi, then run the same command again. |
 | 129, 130, 143 | Interrupted. Run the same command again: it finishes or undoes what was started. |
 | 1 or another | Something failed; a failure report to copy and paste is printed. |
 
@@ -159,9 +239,10 @@ true: the deploy key reached GitHub during the run, and the app runs from
 - **The bootstrap's log**: `~/.local/state/morebees/bootstrap-<date>-<pid>.log`
   (under `$XDG_STATE_HOME` when that is set), readable only by you (mode 0600).
   It holds the bootstrap's own messages, the installer's command line and its exit
-  status. Its path is printed at the end of every run. It is not a copy of the
-  installer's output: the installers keep their own logs, and copying their output
-  would turn off their live progress line.
+  status, and after an NVMe change the boot line before and after, both SHA-256
+  sums and the undo command. Its path is printed at the end of every run. It is
+  not a copy of the installer's output: the installers keep their own logs, and
+  copying their output would turn off their live progress line.
 - **The standalone installer's log**: `/var/log/renandstimpi_standalone_installer.log`.
 - **The lab wizard's log** (Terminal PC): `/tmp/rso_deploy_wizard_<date>.log`, named
   at the top of the wizard's output, and the Terminal installer's
@@ -224,17 +305,26 @@ true: the deploy key reached GitHub during the run, and the app runs from
   or close it, then run the command again.
 - **`sha256sum: WARNING: 1 computed checksum did NOT match`**: the download is not
   the pinned file. Nothing was run. Copy the line again from this README.
+- **A Pi 5's NVMe drive disconnects** (`nvme nvme0: controller is down` in
+  `journalctl -k`, and the Pi can no longer write to its disk): restart the Pi,
+  then run the one-liner with `--add-nvme-power-settings` at the end, or answer
+  `y` when the bootstrap asks. It adds the NVMe power settings to the boot line
+  and stops with status 5; restart the Pi again and run the same command once
+  more. To undo the settings:
+  `sudo cp /boot/firmware/cmdline.txt.before-morebees-nvme /boot/firmware/cmdline.txt`,
+  then restart.
 
 ## For maintainers
 
 ### Tests and CI
 
 `bash tests/run_tests.sh` runs the bootstrap end to end in a sandbox, with `gh`,
-`sudo` and the installers stubbed and real git against a small stand-in for the
-app repository (Linux or macOS; it needs git and bash). Every shell file must be
-clean under ShellCheck 0.11.0: `shellcheck bootstrap.sh scripts/*.sh tests/*.sh`.
-`.github/workflows/ci.yml` runs both on every pull request and on every push to
-`main`.
+`sudo` and the installers stubbed, a stand-in device tree, boot folder, sysfs and
+kernel log for the NVMe check, and real git against a small stand-in for the app
+repository (Linux or macOS; it needs git and bash). No test reads or changes the
+computer it runs on. Every shell file must be clean under ShellCheck 0.11.0:
+`shellcheck bootstrap.sh scripts/*.sh tests/*.sh`. `.github/workflows/ci.yml`
+runs both on every pull request and on every push to `main`.
 
 ### Trying a branch on a Pi
 

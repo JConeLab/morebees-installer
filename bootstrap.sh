@@ -26,6 +26,12 @@
 # installer asks what to do with the data. A Pi whose first install stopped
 # before phase 70's cutover is finished with the steps of a new Pi.
 #
+# On a Raspberry Pi 5 that starts from an NVMe drive, the NVMe power settings
+# are checked first (nvme_power_check): before the sign-in on a new Pi, and
+# before the hand-off on a provisioned one. When the bootstrap adds them to the
+# boot line it stops with status 5, because they take effect only at the next
+# boot: restart the Pi, then run the same command again.
+#
 # Two roles, one bootstrap:
 #   terminal    (default on a PC) Lab setup wizard: Terminal PC install +
 #               Task Pi(s) + ML Module + API service + desktop icon in one run.
@@ -40,23 +46,29 @@
 #   GH_TOKEN       pre-issued token for fully headless installs (skips the
 #                  browser step; needs read access to the app repo)
 #
-# Role flags are consumed here; every other arg is forwarded to the installer:
+# The role flags and --add-nvme-power-settings are consumed here; every other
+# arg is forwarded to the installer:
 #   ... --standalone                           # single-rig Pi
 #   ... --skip-taskpi --skip-ml --dev-mode     # terminal-only test box
 #   ... --start-rig-id 01                      # full lab
 #   ... --standalone --skip-phase 20           # Pi, skip the DAQ HAT lib
+#   ... --add-nvme-power-settings              # Pi 5 on NVMe: add them, no question
 #
 # Exit status: the installer's own (0 installed, 2 installed with problems,
 # 3 stopped before installing with nothing changed, 4 reinstall undone,
 # 129/130/143 interrupted); 1 when the bootstrap itself fails, with a failure
-# report to paste.
+# report to paste; 5 when the bootstrap added the NVMe power settings to the
+# boot line and stopped for a restart.
 #
 # Log: ${XDG_STATE_HOME:-~/.local/state}/morebees/bootstrap-<date>-<pid>.log,
 # mode 0600: the bootstrap's own messages only. The installer keeps its own log;
 # copying its output here would turn off its live progress line.
 #
 # Test seams (the test suite points these into a sandbox): MB_BIN_DIR,
-# MB_ROLE_FILE, MB_RIGCAM_ENV, MB_RIGCAM_TIMEOUT.
+# MB_ROLE_FILE, MB_RIGCAM_ENV, MB_RIGCAM_TIMEOUT, and for the NVMe check
+# MB_DT_MODEL, MB_BOOT_DIR, MB_SYSFS, MB_PROC_CMDLINE and MB_TTY (the terminal
+# stdin is reattached to and the question is read from). The commands the check
+# runs (findmnt, journalctl, dmesg, sudo, sync) are found on PATH.
 #
 # This file contains no secrets. Everything below runs inside main(), called
 # on the last line, so a truncated download can never execute half a script.
@@ -74,6 +86,22 @@ BIN_DIR="${MB_BIN_DIR:-/usr/local/bin}"
 ROLE_FILE="${MB_ROLE_FILE:-/etc/rso/role}"
 RIGCAM_ENV="${MB_RIGCAM_ENV:-/etc/rso/rigcam.env}"
 RIGCAM_TIMEOUT="${MB_RIGCAM_TIMEOUT:-10}"
+DT_MODEL="${MB_DT_MODEL:-/proc/device-tree/model}"
+BOOT_DIR="${MB_BOOT_DIR:-/boot/firmware}"
+SYSFS="${MB_SYSFS:-/sys}"
+PROC_CMDLINE="${MB_PROC_CMDLINE:-/proc/cmdline}"
+TTY_DEV="${MB_TTY:-/dev/tty}"
+
+# The NVMe power settings: the three kernel settings the kernel itself suggested
+# when a drive dropped off the PCIe bus of a Raspberry Pi 5 (app repository,
+# WORKLIST W-191). They turn off the drive's and the PCIe link's power saving.
+NVME_SETTINGS=(nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off)
+# Drive models known to drop off the bus on a Pi 5 without those settings: the
+# bootstrap adds them without asking on these. An entry matches, ignoring case,
+# any part of the model the drive reports in sysfs (/sys/block/nvme0n1/device/model,
+# "KINGSTON SKC3000S512G" for a Kingston KC3000). When a lab reports another
+# model that drops, add a part of its model here.
+NVME_DROP_MODELS=(KC3000 NM620)
 
 DID_LOGIN=0          # this run created the GitHub session
 SIGNIN_REACHED=0     # this run created or reused a GitHub session
@@ -104,6 +132,16 @@ REMOTE_TAGS=""
 LS_OUT=""
 REF_KIND=""
 SEMVER_CMP=""
+NVME_FORCE=0         # --add-nvme-power-settings: add the NVMe power settings without asking
+HAVE_TTY=0           # stdin is a terminal to ask on (main reattaches it when it can)
+NVME_LINE=""         # a boot line as read, without its newline ...
+NVME_NL=""           # ... and its newline, or nothing when it has none
+NVME_WHY=""          # why a boot line cannot be used
+NVME_MISSING=""      # the NVMe power settings a command line lacks ...
+NVME_CONFLICT=""     # ... and its parameters that give one of them another value
+NVME_WANT=""         # the new boot line, written outside the boot folder ...
+NVME_STAGED=""       # ... and its temporary copy in the boot folder, until the move
+NVME_NEW_BACKUP=""   # a backup this run made, removed again when the change fails
 
 BLUE='\033[0;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 
@@ -127,7 +165,7 @@ time:  $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
 step:  ${BOOTSTRAP_STEP:-startup}
 ref:   ${REF:-${RSO_GIT_REF:-<latest>}}
 role:  ${ROLE:-unknown}
-model: $(tr -d '\0' </proc/device-tree/model 2>/dev/null || uname -m)
+model: $(tr -d '\0' 2>/dev/null <"$DT_MODEL" || uname -m)
 os:    $os_name"
     if [[ -n "$INSTALLER_LOG" ]]; then
         report="$report
@@ -185,12 +223,15 @@ log_init() {
 }
 
 parse_role() {
-    # Consume the role flags; everything else is forwarded untouched.
+    # Consume the bootstrap's own flags, the role and --add-nvme-power-settings;
+    # everything else is forwarded untouched (the installers refuse an option
+    # they do not know).
     local a
     for a in "$@"; do
         case "$a" in
             --standalone) ROLE="standalone" ;;
             --terminal)   ROLE="terminal" ;;
+            --add-nvme-power-settings) NVME_FORCE=1 ;;
             *) ARGS+=("$a") ;;
         esac
     done
@@ -199,7 +240,7 @@ parse_role() {
         # A Raspberry Pi cannot run the lab wizard (it provisions a Terminal
         # PC: PostgreSQL, the API service, the rig subnet), so defaulting to
         # it here would be a guaranteed-wrong install. Detect and say so.
-        if grep -qi "raspberry pi" /proc/device-tree/model 2>/dev/null; then
+        if grep -qi "raspberry pi" "$DT_MODEL" 2>/dev/null; then
             ROLE="standalone"
             info "Raspberry Pi detected -- installing the single-rig standalone setup."
             info "Pass --terminal to install the lab wizard flow instead."
@@ -580,6 +621,367 @@ run_end() {
         _closing_update_line
     fi
     exit "$rc"
+}
+
+# --- NVMe power settings on a Raspberry Pi 5 ----------------------------------
+#
+# Some NVMe drives drop off the PCIe bus of a Raspberry Pi 5 under heavy writes,
+# and the root filesystem then turns read-only, unless the boot line turns off
+# their power saving (app repository, WORKLIST W-191). On a Pi 5 whose root
+# filesystem is on NVMe and whose boot line lacks any of NVME_SETTINGS,
+# nvme_power_check adds the missing ones by itself when the drive is in
+# NVME_DROP_MODELS or this boot's kernel log shows a drop. Otherwise it asks
+# (No unless the answer is y), and with no terminal to ask on it adds them only
+# for --add-nvme-power-settings. The kernel reads the boot line only at boot, so
+# after a change the run stops with status 5 for a restart. Every change is
+# reversible: a copy of the old line stays beside it, and the log has both
+# SHA-256 sums and the undo command. A check that fails changes nothing.
+
+_sha256() {
+    (sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" 2>/dev/null) | cut -d' ' -f1
+}
+
+# _nvme_nothing <reason>: there is nothing to add on this computer.
+_nvme_nothing() {
+    _log "NVMe power settings: nothing to do: $1"
+    if [[ "$NVME_FORCE" == 1 ]]; then
+        info "--add-nvme-power-settings: nothing to add, because $1."
+    fi
+}
+
+# _nvme_root_source: the device the root filesystem is mounted from.
+_nvme_root_source() {
+    local src=""
+    src="$(findmnt -n -o SOURCE / 2>/dev/null | tail -n 1)" || src=""
+    printf '%s\n' "${src%%\[*}"     # a btrfs subvolume reads /dev/nvme0n1p2[/@]
+}
+
+# _nvme_read_line <file>: read a boot line exactly. Sets NVME_LINE to the line
+# and NVME_NL to its newline, or to nothing when the file has none. When the
+# file is not one line of text, says why in NVME_WHY and returns 1.
+_nvme_read_line() {
+    local f="$1" content="" all="" text="" LC_ALL=C
+    NVME_LINE=""; NVME_NL=""; NVME_WHY=""
+    if [[ -L "$f" ]]; then
+        NVME_WHY="$f is a link"
+        return 1
+    fi
+    if [[ ! -f "$f" || ! -r "$f" ]]; then
+        NVME_WHY="$f cannot be read"
+        return 1
+    fi
+    all="$(wc -c <"$f" | tr -d '[:space:]')" || all=""
+    text="$(tr -d '\000' <"$f" | wc -c | tr -d '[:space:]')" || text=""
+    if [[ -z "$all" || "$all" != "$text" ]]; then
+        NVME_WHY="$f holds a byte that is not text"
+        return 1
+    fi
+    # The x keeps the newlines at the end, which command substitution drops.
+    { content="$(cat -- "$f" && printf x)"; } 2>/dev/null || {
+        NVME_WHY="$f cannot be read"
+        return 1
+    }
+    content="${content%x}"
+    if [[ "${#content}" != "$all" ]]; then
+        NVME_WHY="$f changed while it was being read"
+        return 1
+    fi
+    if [[ "$content" == *$'\n' ]]; then
+        NVME_NL=$'\n'
+        content="${content%$'\n'}"
+    fi
+    if [[ "$content" == *$'\n'* ]]; then
+        NVME_WHY="$f has more than one line"
+        return 1
+    fi
+    if [[ "$content" == *$'\r'* ]]; then
+        NVME_WHY="$f has a Windows line ending (a carriage return)"
+        return 1
+    fi
+    if [[ -z "${content//[[:space:]]/}" ]]; then
+        NVME_WHY="$f is empty"
+        return 1
+    fi
+    NVME_LINE="$content"
+}
+
+# _nvme_scan <command line>: sets NVME_MISSING to the NVME_SETTINGS it lacks,
+# and NVME_CONFLICT to its parameters that give one of them another value.
+_nvme_scan() {
+    local s key w found
+    local -a words=()
+    NVME_MISSING=""; NVME_CONFLICT=""
+    read -r -a words <<<"$1" || true
+    for s in "${NVME_SETTINGS[@]}"; do
+        key="${s%%=*}"
+        found=0
+        for w in ${words[@]+"${words[@]}"}; do
+            if [[ "$w" == "$s" ]]; then
+                found=1
+            elif [[ "$w" == "$key" || "$w" == "$key="* ]]; then
+                NVME_CONFLICT="${NVME_CONFLICT:+$NVME_CONFLICT }$w"
+            fi
+        done
+        if [[ "$found" == 0 ]]; then
+            NVME_MISSING="${NVME_MISSING:+$NVME_MISSING }$s"
+        fi
+    done
+}
+
+# _nvme_model <disk>: the drive's model as sysfs reports it, trimmed.
+_nvme_model() {
+    local m=""
+    m="$(cat "$SYSFS/block/$1/device/model" 2>/dev/null)" || m=""
+    m="${m#"${m%%[![:space:]]*}"}"
+    printf '%s\n' "${m%"${m##*[![:space:]]}"}"
+}
+
+# _nvme_known_drop <model>: the model matches an entry of NVME_DROP_MODELS.
+_nvme_known_drop() {
+    local model entry
+    [[ -n "$1" ]] || return 1
+    model="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    for entry in "${NVME_DROP_MODELS[@]}"; do
+        entry="$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')"
+        if [[ -n "$entry" && "$model" == *"$entry"* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# _nvme_drop_logged: this boot's kernel log shows an NVMe drive dropping off the
+# bus ("nvme nvme0: controller is down; will reset: ..."): the journal's kernel
+# messages, else the kernel's own buffer.
+_nvme_drop_logged() {
+    local out=""
+    out="$(journalctl -k -b 0 --no-pager -q 2>/dev/null)" || out=""
+    if [[ -z "$out" ]]; then
+        out="$(dmesg 2>/dev/null)" || out=""
+    fi
+    grep -qE 'nvme[0-9]+: controller is down' <<<"$out"
+}
+
+# _nvme_ask <model>: ask on the terminal; returns 0 for yes. Anything but y or
+# yes, an empty answer included, is No.
+_nvme_ask() {
+    local ans="" verdict=no
+    warn "This Raspberry Pi 5 starts from an NVMe drive (${1:-its model could not be read}), and its boot line"
+    warn "($BOOT_DIR/cmdline.txt) lacks: $NVME_MISSING"
+    warn "Without these settings some drives disconnect on a Pi 5, and the Pi then cannot write to its"
+    warn "disk until it restarts. They turn off the drive's power saving, so it runs a little warmer."
+    warn "This drive is not a model known to disconnect, and this boot's kernel log shows no disconnect."
+    printf '%b' "${YELLOW}[bootstrap]${NC} Add them now? This run then stops so that you can restart the Pi. [y/N] " >&2 || true
+    read -r ans || true
+    # A terminal echoes the Enter that ends the answer; anything else does not.
+    [[ -t 0 ]] || { echo >&2 || true; }
+    case "$ans" in
+        [Yy]|[Yy][Ee][Ss]) verdict=yes ;;
+    esac
+    _log "NVMe power settings: asked; answer [$ans]: $verdict"
+    [[ "$verdict" == yes ]]
+}
+
+# _nvme_cleanup: remove what a change that did not happen left: the temporary
+# file in the boot folder, a backup this run made, and the prepared new line.
+_nvme_cleanup() {
+    if [[ -n "$NVME_STAGED" ]]; then
+        sudo rm -f -- "$NVME_STAGED" 2>/dev/null \
+            || warn "could not remove $NVME_STAGED; remove it with: sudo rm -f -- $NVME_STAGED"
+        NVME_STAGED=""
+    fi
+    if [[ -n "$NVME_NEW_BACKUP" ]]; then
+        sudo rm -f -- "$NVME_NEW_BACKUP" 2>/dev/null \
+            || warn "could not remove $NVME_NEW_BACKUP; remove it with: sudo rm -f -- $NVME_NEW_BACKUP"
+        NVME_NEW_BACKUP=""
+    fi
+    if [[ -n "$NVME_WANT" ]]; then
+        rm -f -- "$NVME_WANT" 2>/dev/null || true
+        NVME_WANT=""
+    fi
+}
+
+# _nvme_not_changed <why>: a check failed: undo what was made, say so. The run
+# carries on.
+_nvme_not_changed() {
+    _nvme_cleanup
+    warn "The NVMe power settings were not added: $1. The boot line was not changed; carrying on."
+}
+
+# _nvme_apply <reason>: append NVME_MISSING to the boot line, reversibly.
+# Returns 0 once the new line is in place, and 1 when a check failed and
+# nothing was changed.
+_nvme_apply() {
+    local reason="$1" f="$BOOT_DIR/cmdline.txt" backup="$BOOT_DIR/cmdline.txt.before-morebees-nvme"
+    local old_line="$NVME_LINE" nl="$NVME_NL" added="$NVME_MISSING" sep=" " new old_sum new_sum
+    # The settings go at the end of the line; the rest stays byte for byte.
+    if [[ "$old_line" == *[[:blank:]] ]]; then
+        sep=""
+    fi
+    new="$old_line$sep$added"
+    NVME_WANT="$(mktemp "${TMPDIR:-/tmp}/morebees-cmdline.XXXXXX")" || NVME_WANT=""
+    if [[ -z "$NVME_WANT" ]] || ! printf '%s%s' "$new" "$nl" >"$NVME_WANT"; then
+        _nvme_not_changed "the new line could not be written to a temporary file"
+        return 1
+    fi
+    # A copy of the line as it is now. An earlier copy is never overwritten:
+    # when it holds another line, this one is copied under a dated name.
+    if [[ -e "$backup" ]] && ! cmp -s "$backup" "$f"; then
+        backup="$backup-$(date '+%Y%m%d-%H%M%S')"
+    fi
+    if [[ -e "$backup" ]]; then
+        if ! cmp -s "$backup" "$f"; then
+            _nvme_not_changed "$backup exists and holds another line"
+            return 1
+        fi
+        _log "NVMe power settings: $backup already holds this line; it is kept as it is"
+    else
+        if ! sudo cp -- "$f" "$backup"; then
+            _nvme_not_changed "$f could not be copied to $backup"
+            return 1
+        fi
+        NVME_NEW_BACKUP="$backup"
+        if ! cmp -s "$f" "$backup"; then
+            _nvme_not_changed "the copy $backup does not match $f"
+            return 1
+        fi
+    fi
+    # The new line goes to a temporary file in the same folder, which must read
+    # back as one line holding the old line plus the settings and nothing else,
+    # and is then moved into place in one step.
+    NVME_STAGED="$(sudo mktemp "$BOOT_DIR/cmdline.txt.morebees-new.XXXXXX")" || NVME_STAGED=""
+    if [[ -z "$NVME_STAGED" ]]; then
+        _nvme_not_changed "no temporary file could be made in $BOOT_DIR"
+        return 1
+    fi
+    if ! sudo cp -- "$NVME_WANT" "$NVME_STAGED"; then
+        _nvme_not_changed "the new line could not be written to $NVME_STAGED"
+        return 1
+    fi
+    if ! _nvme_read_line "$NVME_STAGED"; then
+        _nvme_not_changed "$NVME_WHY"
+        return 1
+    fi
+    if [[ "$NVME_LINE" != "$new" || "$NVME_NL" != "$nl" ]] || ! cmp -s "$NVME_STAGED" "$NVME_WANT"; then
+        _nvme_not_changed "$NVME_STAGED did not read back as the old line plus $added"
+        return 1
+    fi
+    # The move replaces the whole file, so it must still hold the line read.
+    if ! _nvme_read_line "$f" || [[ "$NVME_LINE" != "$old_line" || "$NVME_NL" != "$nl" ]]; then
+        _nvme_not_changed "$f changed while the new line was prepared"
+        return 1
+    fi
+    old_sum="$(_sha256 "$f")"
+    if ! sudo mv -f -- "$NVME_STAGED" "$f"; then
+        _nvme_not_changed "$NVME_STAGED could not be moved to $f"
+        return 1
+    fi
+    NVME_STAGED=""
+    if ! cmp -s "$f" "$NVME_WANT"; then
+        # The move went through, but the line did not read back: put the copy back.
+        if sudo cp -- "$backup" "$f" && cmp -s "$f" "$backup"; then
+            _nvme_not_changed "$f did not read back as written, so its copy was put back"
+            return 1
+        fi
+        die "$f did not read back as written, and its copy could not be put back.
+   Before the Pi restarts, put it back with: sudo cp $backup $f"
+    fi
+    # On disk before anyone pulls the plug instead of restarting.
+    sync 2>/dev/null || true
+    new_sum="$(_sha256 "$f")"
+    NVME_NEW_BACKUP=""
+    rm -f -- "$NVME_WANT" 2>/dev/null || true
+    NVME_WANT=""
+    _log "NVMe power settings: changed $f, because $reason"
+    _log "NVMe power settings: line before: $old_line"
+    _log "NVMe power settings: line after:  $new"
+    _log "NVMe power settings: sha256 before $old_sum, after $new_sum"
+    _log "NVMe power settings: the line before is kept in $backup"
+    _log "NVMe power settings: undo command: sudo cp $backup $f   (then restart the Pi)"
+    ok "Added $added to the boot line ($f), because $reason. To undo: sudo cp $backup $f, then restart."
+    return 0
+}
+
+# _nvme_running_check: the settings are on the boot line; say so when the
+# running system did not start with them, as when the Pi has not restarted
+# since they were added.
+_nvme_running_check() {
+    local running=""
+    running="$(cat "$PROC_CMDLINE" 2>/dev/null)" || return 0
+    _nvme_scan "$running"
+    if [[ -n "$NVME_MISSING" ]]; then
+        warn "The NVMe power settings are on the boot line, but this system did not start with them: restart the Pi to use them."
+        _log "NVMe power settings: not in effect yet: $PROC_CMDLINE lacks $NVME_MISSING"
+    fi
+}
+
+# _nvme_restart_stop: the new line takes effect at the next boot (status 5).
+_nvme_restart_stop() {
+    warn "Restart needed: the new boot line takes effect only after a restart, so this run stops here."
+    warn "Restart the Pi (sudo reboot), then run the same command again."
+    exit 5
+}
+
+# nvme_power_check [installer arguments...]: the NVMe power settings, run before
+# the first heavy write or the hand-off. --help and --dry-run change nothing, so
+# they skip it.
+nvme_power_check() {
+    BOOTSTRAP_STEP="nvme-power-settings"
+    local dt="" src="" disk="" model="" reason="" f="$BOOT_DIR/cmdline.txt"
+    if _has_info_flag "$@"; then
+        _log "NVMe power settings: not checked: --help and --dry-run change nothing"
+        return 0
+    fi
+    # 2>/dev/null first: a missing file is reported by the shell, on its stderr.
+    dt="$(tr -d '\0' 2>/dev/null <"$DT_MODEL")" || dt=""
+    if [[ "$dt" != "Raspberry Pi 5 "* ]]; then
+        _nvme_nothing "this is not a Raspberry Pi 5 (model: ${dt:-unknown})"
+        return 0
+    fi
+    src="$(_nvme_root_source)"
+    if [[ "$src" =~ ^/dev/(nvme[0-9]+n[0-9]+)(p[0-9]+)?$ ]]; then
+        disk="${BASH_REMATCH[1]}"
+    else
+        _nvme_nothing "the root filesystem is on ${src:-a device that could not be read}, not on an NVMe drive"
+        return 0
+    fi
+    if ! _nvme_read_line "$f"; then
+        warn "The NVMe power settings were not checked: $NVME_WHY. The boot line was not changed."
+        return 0
+    fi
+    _nvme_scan "$NVME_LINE"
+    if [[ -z "$NVME_MISSING$NVME_CONFLICT" ]]; then
+        _nvme_nothing "the boot line already has all three settings"
+        _nvme_running_check
+        return 0
+    fi
+    model="$(_nvme_model "$disk")"
+    _log "NVMe power settings: Raspberry Pi 5, root on $src, drive model [$model], boot line lacks: ${NVME_MISSING:-nothing}"
+    if [[ -n "$NVME_CONFLICT" ]]; then
+        warn "The boot line ($f) sets $NVME_CONFLICT. The bootstrap leaves that to you and adds no NVMe power settings."
+        return 0
+    fi
+    if _nvme_known_drop "$model"; then
+        reason="this drive ($model) is a model known to disconnect without them"
+    elif _nvme_drop_logged; then
+        reason="this boot's kernel log shows the drive disconnecting (controller is down)"
+    elif [[ "$NVME_FORCE" == 1 ]]; then
+        reason="--add-nvme-power-settings asked for them"
+    elif [[ "$HAVE_TTY" != 1 ]]; then
+        info "This Pi 5 starts from an NVMe drive (${model:-model unknown}) whose boot line lacks $NVME_MISSING."
+        info "There is no terminal to ask on, so the boot line was not changed. To add them, run again with --add-nvme-power-settings."
+        _log "NVMe power settings: not asked (no terminal); not changed"
+        return 0
+    elif _nvme_ask "$model"; then
+        reason="you answered yes"
+    else
+        info "The boot line was not changed. To add the settings later, run again with --add-nvme-power-settings."
+        return 0
+    fi
+    if _nvme_apply "$reason"; then
+        _nvme_restart_stop
+    fi
+    return 0
 }
 
 # --- An installed standalone Pi ----------------------------------------------
@@ -1164,6 +1566,7 @@ _on_exit() {
     set +e
     trap '' HUP INT TERM
     _remove_build
+    _nvme_remove_staged
     [[ -z "$APP_DIR" ]] || _ensure_ssh_origin
     if [[ "$rc" -ne 0 && "$SIGNIN_REACHED" == 1 && "$AUTH_FINISHED" == 0 && "$SIGNED_OUT" == 0 ]] \
             && command -v gh >/dev/null 2>&1 \
@@ -1206,6 +1609,26 @@ _remove_build() {
 }
 
 # shellcheck disable=SC2329  # run by a trap
+_nvme_remove_staged() {
+    # A run stopped while the boot line was changing: the new line's temporary
+    # files go, the one in the boot folder with sudo -n, because nothing may ask
+    # for a password on the way out. The boot line itself is either the old one
+    # or the new one: the move is a single rename.
+    if [[ -n "$NVME_STAGED" && -e "$NVME_STAGED" ]]; then
+        if sudo -n rm -f -- "$NVME_STAGED" 2>/dev/null && [[ ! -e "$NVME_STAGED" ]]; then
+            _log "NVMe power settings: temporary file removed: $NVME_STAGED"
+        else
+            warn "could not remove $NVME_STAGED; remove it with: sudo rm -f -- $NVME_STAGED"
+        fi
+    fi
+    NVME_STAGED=""
+    if [[ -n "$NVME_WANT" ]]; then
+        rm -f -- "$NVME_WANT" 2>/dev/null || true
+        NVME_WANT=""
+    fi
+}
+
+# shellcheck disable=SC2329  # run by a trap
 _ensure_ssh_origin() {
     # The wizard's installer may re-clone the repo (operator answers "yes" to
     # "Remove and re-clone?"), which resets origin to HTTPS. Guarantee the box
@@ -1221,6 +1644,8 @@ _ensure_ssh_origin() {
 }
 
 new_install() {
+    # First: a stop for a restart must come before the sign-in and the clone.
+    nvme_power_check "$@"
     ensure_prereqs
     github_signin
     resolve_release_ref
@@ -1253,10 +1678,13 @@ main() {
     set -- "${ARGS[@]+"${ARGS[@]}"}"   # role flags consumed; forward the rest
 
     # Piped from curl, stdin is the pipe; reattach the real terminal so the
-    # installer's prompts work. The subshell probe keeps a failed open (no
-    # controlling terminal) from killing the script.
-    if [[ ! -t 0 ]] && (exec </dev/tty) 2>/dev/null; then
-        exec </dev/tty
+    # installer's prompts and the NVMe question work. The subshell probe keeps a
+    # failed open (no controlling terminal) from killing the script.
+    if [[ -t 0 ]]; then
+        HAVE_TTY=1
+    elif (exec <"$TTY_DEV") 2>/dev/null; then
+        exec <"$TTY_DEV"
+        HAVE_TTY=1
     fi
 
     log_init
@@ -1282,11 +1710,15 @@ main() {
                     installed_only_select || refuse \
                         "The installed release in ~/rso/current has no standalone installer to run --only with." \
                         "Nothing was changed."
+                    # After every check that stops with nothing changed, before the hand-off.
+                    nvme_power_check "$@"
                     installed_only_run "$@"
                 fi
                 if _has_info_flag "$@"; then
                     installed_info_run "$@"
                 fi
+                # Before the release is chosen: that may sign in or make a copy.
+                nvme_power_check "$@"
                 installed_full_run "$@"
             fi
             # Stopped before phase 70's cutover: the steps of a new Pi finish it,
