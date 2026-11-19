@@ -1046,7 +1046,7 @@ check "v0.4.9's real usage text: not the target, and no newer release: the card"
     eval 'rc_is 3 && out_has "MoreBees v0.4.9 is installed on this Pi." && no_event "installer ran"'
 done_sb
 
-# --- 27 to 56: the NVMe power settings on a Raspberry Pi 5 ------------------------
+# --- 27 to 57: the NVMe power settings on a Raspberry Pi 5 ------------------------
 
 NL=$'\n'
 PI5_LINE='console=serial0,115200 console=tty1 root=PARTUUID=0a1b2c3d-02 rootfstype=ext4 fsck.repair=yes rootwait quiet splash plymouth.ignore-serial-consoles'
@@ -1307,7 +1307,7 @@ printf '%s pcie_aspm=force\n' "$PI5_LINE" > "$CUR_SB/boot/firmware/cmdline.txt"
 keep_line
 run_bootstrap -- --standalone
 check "another value on the line, on a drive known to disconnect: left to the operator, and exit 3 before the installer" \
-    eval 'out_has "sets pcie_aspm=force, which the bootstrap leaves to you" && line_kept && rc_is 3 && no_event "installer ran"'
+    eval 'out_has "sets pcie_aspm=force (needs pcie_aspm=off), which the bootstrap leaves to you" && line_kept && rc_is 3 && no_event "installer ran"'
 check "... with how to edit the line, and the flag that goes on without them" \
     eval 'out_has "so that it holds $NVME_ADDED, with no other value for them" && out_has "run the same command with --no-nvme-power-settings"'
 done_sb
@@ -1317,7 +1317,7 @@ printf '%s pcie_aspm=force\n' "$PI5_LINE" > "$CUR_SB/boot/firmware/cmdline.txt"
 keep_line
 run_bootstrap -- --standalone
 check "another value on the line, on a drive not on the list: left to the operator, and the run carries on, exit 0" \
-    eval 'out_has "sets pcie_aspm=force, which the bootstrap leaves to you" && line_kept && rc_is 0 && event "installer ran"'
+    eval 'out_has "sets pcie_aspm=force (needs pcie_aspm=off), which the bootstrap leaves to you" && line_kept && rc_is 0 && event "installer ran"'
 done_sb
 fresh_sandbox
 as_pi5_nvme "$OTHER_DRIVE"
@@ -1407,7 +1407,7 @@ printf '%s %s' "$PI5_LINE" "$NVME_ADDED" > "$CUR_SB/boot/firmware/cmdline.txt"
 keep_line
 run_bootstrap -- --standalone
 check "a drive known to disconnect: exit 3 before the installer, the line as it was" \
-    eval 'rc_is 3 && out_has "they are wanted because this drive ($KC3000) is a model known to disconnect" && line_kept && no_event "installer ran"'
+    eval 'rc_is 3 && out_has "They are wanted because this drive ($KC3000) is a model known to disconnect" && line_kept && no_event "installer ran"'
 done_sb
 
 echo "38. the same command again without the restart stops again; after the restart, the run goes on"
@@ -1761,9 +1761,46 @@ for what in "a Windows line ending" "another value" "a bare --"; do
     keep_line
     run_bootstrap -- --standalone --add-nvme-power-settings
     check "$what: exit 3 before the installer, the line as it was, the flag given as the reason" \
-        eval 'rc_is 3 && no_event "installer ran" && line_kept && out_has "they are wanted because --add-nvme-power-settings asked for them"'
+        eval 'rc_is 3 && no_event "installer ran" && line_kept && out_has "They are wanted because --add-nvme-power-settings asked for them"'
     done_sb
 done
+
+echo "57. settings that are wanted but cannot be put in effect: what is wrong and why, then a question whether to go on without them"
+for answer in y Enter; do
+    fresh_sandbox
+    as_pi5_nvme "$KC3000"
+    printf '%s pcie_aspm=force\n' "$PI5_LINE" > "$CUR_SB/boot/firmware/cmdline.txt"
+    keep_line
+    if [ "$answer" = y ]; then printf 'y\n' > "$CUR_SB/tty"; else printf '\n' > "$CUR_SB/tty"; fi
+    run_bootstrap -- --standalone
+    check "$answer: it says what is wrong, why they are wanted and how to fix it, then asks" \
+        eval 'out_has "sets pcie_aspm=force (needs pcie_aspm=off)" && out_has "They are wanted because this drive ($KC3000)" && out_has "so that it holds $NVME_ADDED" && out_has "Go on without them? Nothing on the boot line changes. [y/N]"'
+    if [ "$answer" = y ]; then
+        check "y: the line as it was, and the install goes on, exit 0; the answer is logged" \
+            eval 'line_kept && rc_is 0 && event "installer ran" && grep -qF "go on without them; answer [y]: yes" "$(the_log)"'
+    else
+        check "Enter: stopped, exit 3, nothing changed or run" \
+            eval 'line_kept && rc_is 3 && no_event "installer ran" && out_has "Stopped, as you answered. Nothing was changed."'
+    fi
+    done_sb
+done
+new_sandbox stub
+as_pi5_nvme "$KC3000"
+printf '%s\r\n' "$PI5_LINE" > "$CUR_SB/boot/firmware/cmdline.txt"
+printf 'y\n' > "$CUR_SB/tty"
+run_bootstrap -- --standalone --non-interactive
+check "--non-interactive with a terminal: not asked, exit 3, and it says why" \
+    eval 'rc_is 3 && out_hasnt "Go on without them?" && out_has "since --non-interactive asks nothing" && no_event "installer ran"'
+done_sb
+fresh_sandbox
+as_pi5_nvme "$KC3000"
+run_bootstrap -- --standalone
+restarted no
+printf 'y\n' > "$CUR_SB/tty"
+run_bootstrap -- --standalone
+check "the settings on the line, but the Pi did not start with them: it says so, asks, and y goes on, exit 0" \
+    eval 'out_has "it does not start from" && out_has "Go on without them?" && rc_is 0 && event "installer ran"'
+done_sb
 
 echo
 echo "== $PASS passed, $FAIL failed =="

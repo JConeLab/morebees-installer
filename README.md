@@ -155,9 +155,12 @@ changed and nothing is asked. The bootstrap reads the line as the kernel does:
 setting `pcie_aspm`. A boot line that gives one of them another value
 (`pcie_aspm=force`, for example) is left to you, and so is a line with a bare
 `--` before the settings, after which the kernel passes everything to init.
-When the settings are needed or asked for, the bootstrap then stops with
-status 3, says how to edit the line, and names
-`--no-nvme-power-settings` to install without them; otherwise it says so and
+When the settings are needed or asked for, the bootstrap says what is wrong
+(the value a setting needs, or what follows the `--`), why they are wanted and
+how to edit the line, then asks whether to go on without them, No unless you
+type `y`. No, or no terminal to ask on, or `--non-interactive`, stops the run
+with status 3 and names `--no-nvme-power-settings`, which goes on without the
+question; on a drive not on the list, and without the flag, it says so and
 the install carries on. An empty boot line (or one of blanks only), from which
 the Pi would not start, stops the run with status 3 on any drive, even with
 `--no-nvme-power-settings`: the bootstrap says not to restart until a working
@@ -180,9 +183,9 @@ from just before that record until the stop for the restart is held off. A
 temporary file that a power cut left in the boot folder before its move goes
 before the next change. If any of these checks fails, nothing is changed and the
 bootstrap says why. When the settings are needed (a drive known to disconnect,
-or a disconnect this boot) or were asked for, it then stops with status 3,
-before the sign-in, and says how to add them by hand; otherwise the install
-carries on. On a Pi that already has MoreBees, nothing is changed, and no
+or a disconnect this boot) or were asked for, it then says how to add them by
+hand and asks whether to go on without them, before the sign-in, as above;
+otherwise the install carries on. On a Pi that already has MoreBees, nothing is changed, and no
 restart is advised, while MoreBees is in use: the bootstrap stops with status 3
 when the settings are needed or asked for, names what runs, and says to restart
 once it has finished; otherwise it does not ask.
@@ -199,7 +202,8 @@ the stop says so, and a run before the restart then does not stop for it. When
 the settings are on the boot line but the running system did not start with
 them after a restart, the Pi does not start from that line (look for `cmdline=`
 or `os_prefix=` in `/boot/firmware/config.txt`); the bootstrap says so, and
-stops with status 3 where the settings are needed, or carries on elsewhere. A
+where the settings are needed asks whether to go on without them, as above, or
+carries on elsewhere. A
 record of another line (the settings removed or written again by hand since) is
 dropped, and the bootstrap then says only that the running system did not start
 with them.
@@ -243,8 +247,9 @@ Bootstrap flags, for a Raspberry Pi 5 that starts from an NVMe drive (see
 - `--add-nvme-power-settings` adds the NVMe power settings without asking, also
   when there is no terminal to ask on, for example
   `bash "$mb" --add-nvme-power-settings`. When the line cannot take them (one it
-  will not read, another value for one of them, or a bare `--`), the run stops
-  with status 3, as for a drive known to disconnect.
+  will not read, another value for one of them, or a bare `--`), the run asks
+  whether to go on without them, and otherwise stops with status 3, as for a
+  drive known to disconnect.
 - `--no-nvme-power-settings` never adds them and never stops for them, also on a
   drive known to disconnect, and says what that leaves, the running system
   included (settings on the line that the Pi has not restarted with yet): for a

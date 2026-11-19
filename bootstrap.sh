@@ -156,6 +156,8 @@ NVME_PENDING_SUM=""  # ... and the SHA-256 of the line written then
 NVME_RECORDED=1      # 0 when this run changed the line but could not record the restart it stops for
 NVME_RESTART=""      # how a message says to restart (_nvme_restart_words)
 NVME_RESTART_EXIT=0  # 1 just before the NVMe restart's exit 5, the only 5 a run ends with
+NVME_CAN_ASK=0       # 1 when the NVMe check may ask: a terminal, and no --non-interactive ...
+NVME_NO_ASK=""       # ... and why it may not
 MB_IN_USE=()         # what _morebees_in_use found running
 
 BLUE='\033[0;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
@@ -668,8 +670,10 @@ run_end() {
 # SHA-256 sums and the undo command. A check that fails changes nothing; when
 # the settings are needed or were asked for and cannot be added (a line it will
 # not read, one that gives a setting another value, or one with a bare --), the
-# run then stops with status 3 rather than install without them. An empty boot
-# line, from which the Pi would not start, stops the run on any drive. On an
+# run says what is wrong and why they are wanted, and asks whether to go on
+# without them; No, or no terminal to ask on, stops it with status 3 rather
+# than install without them. An empty boot line, from which the Pi would not
+# start, stops the run on any drive. On an
 # installed Pi nothing is changed, and no restart is advised, while MoreBees is
 # in use. --no-nvme-power-settings turns the settings off: nothing is added,
 # asked or stopped for, and the run says what that leaves.
@@ -873,7 +877,7 @@ _nvme_cleanup() {
 }
 
 # _nvme_not_changed <why>: a check failed: undo what was made, and keep why in
-# NVME_FAILED for the caller, which stops the run (_nvme_stop_unchanged).
+# NVME_FAILED for the caller (_nvme_go_on_or_stop).
 _nvme_not_changed() {
     _nvme_cleanup
     NVME_FAILED="$1"
@@ -895,15 +899,73 @@ _nvme_restart_words() {
     return 0
 }
 
-# _nvme_stop_unchanged <why> <reason> <how to add them by hand>: the settings
-# are wanted and the boot line could not be changed: stop with nothing changed
-# (status 3) rather than install without them.
-_nvme_stop_unchanged() {
-    warn "The NVMe power settings were not added: $1. The boot line ($BOOT_DIR/cmdline.txt) was not changed."
+# _nvme_go_on_or_stop <what is wrong> <why they are wanted> <how to fix it, or
+# nothing>: the settings are wanted, and the bootstrap cannot put them in effect
+# itself. It says what is wrong, why they are wanted and how to fix it, then
+# asks whether to go on without them (No unless y); No stops the run with
+# nothing changed (status 3). With no terminal to ask on, or with
+# --non-interactive, nothing is asked, and the run stops the same way.
+_nvme_go_on_or_stop() {
+    local ans=""
+    warn "$1"
+    warn "They are wanted because $2: a drive that disconnects leaves the Pi unable to write to its disk until it restarts."
     _nvme_restart_words || true
-    refuse "The bootstrap stops here rather than install without them: they are wanted because $2." \
-        "$3 Then ${NVME_RESTART}, and run the same command again." \
-        "To install without them instead, run the same command with --no-nvme-power-settings. Nothing was changed."
+    if [[ -n "$3" ]]; then
+        warn "$3 Then ${NVME_RESTART}, and run the same command again."
+    else
+        warn "To use them, ${NVME_RESTART}, and run the same command again."
+    fi
+    if [[ "$NVME_CAN_ASK" != 1 ]]; then
+        _log "NVMe power settings: not asked whether to go on without them ($NVME_NO_ASK); stopped"
+        refuse "The bootstrap stops here rather than install without them, since $NVME_NO_ASK. Nothing was changed." \
+            "To go on without them, run the same command with --no-nvme-power-settings."
+    fi
+    printf '%b' "${YELLOW}[bootstrap]${NC} Go on without them? Nothing on the boot line changes. [y/N] " >&2 || true
+    read -r ans || true
+    # A terminal echoes the Enter that ends the answer; anything else does not.
+    [[ -t 0 ]] || { echo >&2 || true; }
+    case "$ans" in
+        [Yy]|[Yy][Ee][Ss])
+            _log "NVMe power settings: asked whether to go on without them; answer [$ans]: yes"
+            warn "Going on without the NVMe power settings, as you answered. If the drive disconnects, the Pi cannot write to its disk until it restarts."
+            return 0 ;;
+    esac
+    _log "NVMe power settings: asked whether to go on without them; answer [$ans]: no"
+    refuse "Stopped, as you answered. Nothing was changed." \
+        "To go on without them next time, without this question, run the same command with --no-nvme-power-settings."
+}
+
+# _nvme_conflict_words: each word of NVME_CONFLICT with the value that its
+# setting needs, as "pcie_aspm=force (needs pcie_aspm=off)".
+_nvme_conflict_words() {
+    local w s name out=""
+    local -a ws=()
+    read -r -a ws <<<"$NVME_CONFLICT" || true
+    for w in ${ws[@]+"${ws[@]}"}; do
+        name="${w%%=*}"
+        for s in "${NVME_SETTINGS[@]}"; do
+            if [[ "${name//-/_}" == "${s%%=*}" ]]; then
+                out="${out:+$out, }$w (needs $s)"
+            fi
+        done
+    done
+    printf '%s' "$out"
+}
+
+# _nvme_after_dashdash <line>: what follows the line's bare --, which the
+# kernel passes to init.
+_nvme_after_dashdash() {
+    local w seen=0 out=""
+    local -a ws=()
+    read -r -a ws <<<"$1" || true
+    for w in ${ws[@]+"${ws[@]}"}; do
+        if [[ "$seen" == 1 ]]; then
+            out="${out:+$out }$w"
+        elif [[ "$w" == "--" ]]; then
+            seen=1
+        fi
+    done
+    printf '%s' "$out"
 }
 
 # _nvme_by_hand <settings>: how to add these settings to the boot line by hand.
@@ -1122,7 +1184,7 @@ _nvme_apply() {
 # stops (status 3) rather than install without them; elsewhere it says so and
 # carries on.
 _nvme_running_check() {
-    local needed="$1" running="" now="" sum=""
+    local needed="$1" running="" now="" sum="" what="" fix=""
     running="$(cat "$PROC_CMDLINE" 2>/dev/null)" || return 0
     _nvme_scan "$running"
     if [[ -z "$NVME_MISSING" ]]; then
@@ -1147,14 +1209,18 @@ _nvme_running_check() {
         _nvme_restart_stop
     fi
     if [[ -n "$NVME_PENDING_BOOT" && -n "$now" ]]; then
-        warn "The Pi has restarted since the NVMe power settings were added, but it did not start with them: it does not start from $BOOT_DIR/cmdline.txt. Look for cmdline= or os_prefix= in $BOOT_DIR/config.txt."
+        what="The Pi has restarted since the NVMe power settings were added, but it did not start with them: it does not start from $BOOT_DIR/cmdline.txt. Look for cmdline= or os_prefix= in $BOOT_DIR/config.txt."
+        fix="To use them, have it start from the boot line that holds them."
     else
-        warn "The NVMe power settings are on the boot line, but this system did not start with them: restart the Pi to use them."
+        what="The NVMe power settings are on the boot line, but this system did not start with them."
+        fix=""
     fi
     if [[ -n "$needed" ]]; then
-        _nvme_restart_words || true
-        refuse "The bootstrap stops here rather than install without them: they are wanted because $needed." \
-            "To use them, ${NVME_RESTART}, or have it start from the boot line that holds them, then run the same command again. Nothing was changed."
+        _nvme_go_on_or_stop "$what" "$needed" "$fix"
+    elif [[ -n "$fix" ]]; then
+        warn "$what"
+    else
+        warn "The NVMe power settings are on the boot line, but this system did not start with them: restart the Pi to use them."
     fi
 }
 
@@ -1215,6 +1281,16 @@ nvme_power_check() {
         _log "NVMe power settings: not checked: --help and --dry-run change nothing"
         return 0
     fi
+    # Whether a question can be asked, here and in _nvme_go_on_or_stop.
+    NVME_CAN_ASK=0
+    NVME_NO_ASK="there is no terminal to ask on"
+    if [[ "$HAVE_TTY" == 1 ]]; then
+        if _args_have --non-interactive "$@"; then
+            NVME_NO_ASK="--non-interactive asks nothing"
+        else
+            NVME_CAN_ASK=1
+        fi
+    fi
     # 2>/dev/null first: a missing file is reported by the shell, on its stderr.
     dt="$(tr -d '\0' 2>/dev/null <"$DT_MODEL")" || dt=""
     if [[ "$dt" != "Raspberry Pi 5 "* ]]; then
@@ -1236,7 +1312,8 @@ nvme_power_check() {
         needed="this boot's kernel log shows the drive disconnecting (controller is down)"
     fi
     # Wanted without a question: needed, or asked for with the flag. A run that
-    # cannot add what it wants stops with status 3 rather than install without.
+    # cannot add what it wants asks whether to go on without them, and
+    # otherwise stops with status 3 rather than install without them.
     want="$needed"
     if [[ -z "$want" && "$NVME_FORCE" == 1 ]]; then
         want="--add-nvme-power-settings asked for them"
@@ -1251,7 +1328,9 @@ nvme_power_check() {
     fi
     if [[ "$rl" != 0 ]]; then
         if [[ -n "$want" ]]; then
-            _nvme_stop_unchanged "$NVME_WHY" "$want" "$(_nvme_by_hand "${NVME_SETTINGS[*]}")"
+            _nvme_go_on_or_stop "The NVMe power settings were not added: $NVME_WHY. The boot line was not changed." \
+                "$want" "$(_nvme_by_hand "${NVME_SETTINGS[*]}")"
+            return 0
         fi
         warn "The NVMe power settings were not checked: $NVME_WHY. The boot line was not changed."
         return 0
@@ -1272,14 +1351,16 @@ nvme_power_check() {
     # settings, or a bare --, after which the kernel passes everything to init.
     if [[ -n "$NVME_CONFLICT" || "$NVME_DASHDASH" == 1 ]]; then
         if [[ -n "$NVME_CONFLICT" ]]; then
-            why="the boot line ($f) sets $NVME_CONFLICT, which the bootstrap leaves to you"
+            why="the boot line ($f) sets $(_nvme_conflict_words), which the bootstrap leaves to you"
             how="To use them, edit the one line in $f so that it holds ${NVME_SETTINGS[*]}, with no other value for them, and all before any bare --."
         else
-            why="the boot line ($f) has a bare --, after which the kernel passes everything to init, and the bootstrap leaves that to you"
+            found="$(_nvme_after_dashdash "$NVME_LINE")"
+            why="the boot line ($f) has a bare --, after which the kernel passes everything to init (here: ${found:-nothing}), and the bootstrap leaves that to you"
             how="To add them by hand, put these before the bare -- in $f: $NVME_MISSING."
         fi
         if [[ -n "$want" ]]; then
-            _nvme_stop_unchanged "$why" "$want" "$how"
+            _nvme_go_on_or_stop "The NVMe power settings were not added: $why." "$want" "$how"
+            return 0
         fi
         warn "The NVMe power settings were not added: $why."
         _log "NVMe power settings: not changed: $why"
@@ -1318,7 +1399,8 @@ nvme_power_check() {
     if _nvme_apply "$reason"; then
         _nvme_restart_stop
     fi
-    _nvme_stop_unchanged "$NVME_FAILED" "$reason" "$(_nvme_by_hand "$NVME_MISSING")"
+    _nvme_go_on_or_stop "The NVMe power settings were not added: $NVME_FAILED. The boot line ($f) was not changed." \
+        "$reason" "$(_nvme_by_hand "$NVME_MISSING")"
 }
 
 # --- An installed standalone Pi ----------------------------------------------
