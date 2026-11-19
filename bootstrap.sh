@@ -251,8 +251,9 @@ log_init() {
 
 parse_role() {
     # Consume the bootstrap's own flags, the role and the two NVMe flags;
-    # everything else is forwarded untouched (the installers refuse an option
-    # they do not know).
+    # everything else is forwarded in order, with split_equals_forms writing
+    # --only=<k> and --skip-phase=<k> as two words (the installers refuse an
+    # option they do not know).
     local a
     for a in "$@"; do
         case "$a" in
@@ -279,19 +280,19 @@ parse_role() {
 }
 
 split_equals_forms() {
-    # Every released standalone installer reads --only and --skip-phase as two
-    # words ("--only 20") and refuses "--only=20" as an unknown option, while
-    # this script accepts both. Every hand-off forwards ARGS, so rewriting the
-    # = forms here gives an installed Pi's installer, of any version, the form
-    # it reads. The lab wizard has neither option: the terminal role's
-    # arguments are forwarded as given.
-    [[ "$ROLE" == standalone ]] || return 0
+    # Every released standalone installer and lab wizard reads --only and
+    # --skip-phase as two words ("--only 20") and refuses "--only=20" as an
+    # unknown option, while this script accepts both. Every hand-off forwards
+    # ARGS, so rewriting the = forms here gives the installer or wizard of any
+    # version the form it reads. An empty value is left as given, so it is
+    # still refused instead of reaching an installer as an empty list, which
+    # the standalone installer would read as every phase.
     local a split=()
     for a in ${ARGS[@]+"${ARGS[@]}"}; do
         case "$a" in
-            --only=*)       split+=(--only "${a#--only=}") ;;
-            --skip-phase=*) split+=(--skip-phase "${a#--skip-phase=}") ;;
-            *)              split+=("$a") ;;
+            --only=?*)       split+=(--only "${a#--only=}") ;;
+            --skip-phase=?*) split+=(--skip-phase "${a#--skip-phase=}") ;;
+            *)               split+=("$a") ;;
         esac
     done
     ARGS=(${split[@]+"${split[@]}"})
