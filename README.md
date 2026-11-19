@@ -139,8 +139,9 @@ any of them, the bootstrap:
 
 - **adds the missing ones by itself** when the drive is a model known to
   disconnect (so far the Kingston KC3000 and the Lexar NM620) or when this boot's
-  kernel log already shows `controller is down`, and prints one line: what it
-  added, why, and how to undo it;
+  kernel log already shows `controller is down`. It says what it is adding and
+  why before the first `sudo`, which may ask for your password; then what it
+  added, and the undo command on a line of its own;
 - **otherwise asks**, and the answer is No unless you type `y`. With no terminal
   to ask on, or with `--non-interactive`, it asks nothing and changes nothing;
   `--add-nvme-power-settings` at the end of the command adds them without
@@ -153,7 +154,15 @@ changed and nothing is asked. The bootstrap reads the line as the kernel does:
 `-` and `_` are the same in a setting's name, so `pcie-aspm=force` is the
 setting `pcie_aspm`. A boot line that gives one of them another value
 (`pcie_aspm=force`, for example) is left to you, and so is a line with a bare
-`--`, after which the kernel passes everything to init.
+`--` before the settings, after which the kernel passes everything to init.
+When the settings are needed or asked for, the bootstrap then stops with
+status 3, says how to edit the line, and names
+`--no-nvme-power-settings` to install without them; otherwise it says so and
+the install carries on. An empty boot line (or one of blanks only), from which
+the Pi would not start, stops the run with status 3 on any drive, even with
+`--no-nvme-power-settings`: the bootstrap says not to restart until a working
+line is back, and names its own copy of an earlier line, if there is one, to
+check and put back.
 
 **How the line changes.** Only the missing settings are added, at the end of the
 line. The rest of the line stays byte for byte, and it stays one line, ending
@@ -163,50 +172,59 @@ overwritten: when it holds another line, the new copy gets the date and time in
 its name. The new line is written to a temporary file in the same folder, checked
 to read back as exactly the old line plus the settings, written through to the
 drive with the copy (the boot partition is FAT, which has no journal), and moved
-into place. The bootstrap's log gets the line before and after, both SHA-256
+into place, after which the line and then the folder are written through to
+the drive again (on FAT a plain `sync` can leave the folder's change in the
+drive's cache). The bootstrap's log gets the line before and after, both SHA-256
 sums and the exact undo command before the move, and a Ctrl+C or a hang-up
-from just before the move until the stop for the restart is held off. If any of
-these checks fails, nothing is changed and the bootstrap says why. When the
-settings are needed (a drive known to disconnect, or a disconnect this boot) or
-were asked for, it then stops with status 3, before the sign-in, and says how to
-add them by hand; otherwise the install carries on. On a Pi that already has
-MoreBees, nothing is changed while MoreBees is in use: the bootstrap stops with
-status 3 when the settings are needed or asked for, and otherwise does not
-ask.
+from just before that record until the stop for the restart is held off. A
+temporary file that a power cut left in the boot folder before its move goes
+before the next change. If any of these checks fails, nothing is changed and the
+bootstrap says why. When the settings are needed (a drive known to disconnect,
+or a disconnect this boot) or were asked for, it then stops with status 3,
+before the sign-in, and says how to add them by hand; otherwise the install
+carries on. On a Pi that already has MoreBees, nothing is changed, and no
+restart is advised, while MoreBees is in use: the bootstrap stops with status 3
+when the settings are needed or asked for, names what runs, and says to restart
+once it has finished; otherwise it does not ask.
 
 **Restart, then run the same line again.** The kernel reads the boot line only
 when the Pi starts, so after a change the bootstrap stops with status 5, before
 the GitHub sign-in and the clone: restart the Pi (`sudo reboot`) and run the same
 command again. Running it again before the restart stops the same way, with
-status 5: the bootstrap records the boot in which it changed the line. When the
-settings are on the boot line but the running system did not start with them
-after a restart, the Pi does not start from that line (look for `cmdline=` or
-`os_prefix=` in `/boot/firmware/config.txt`); the bootstrap says so, and stops
-with status 3 where the settings are needed, or carries on elsewhere.
+status 5 (or 3 while MoreBees is in use): the bootstrap records the boot in
+which it changed the line, and the line it wrote, in
+`~/.local/state/morebees/nvme-restart-pending`. The record is the running
+user's, so a run from another account does not see it; when it cannot be made,
+the stop says so, and a run before the restart then does not stop for it. When
+the settings are on the boot line but the running system did not start with
+them after a restart, the Pi does not start from that line (look for `cmdline=`
+or `os_prefix=` in `/boot/firmware/config.txt`); the bootstrap says so, and
+stops with status 3 where the settings are needed, or carries on elsewhere. A
+record of another line (the settings removed or written again by hand since) is
+dropped, and the bootstrap then says only that the running system did not start
+with them.
 
 **When it runs.** On a new Pi, or one whose install stopped part way, it runs
 first, before the sign-in. On a provisioned Pi it runs before an `--only` run or
 a reinstall hands off: after the check for another role on the computer and,
 for `--only` runs of phases 20, 70, 75 and 90, after the check that MoreBees is
-not in use. On a reinstall it runs before the release is chosen, so a run that
+not in use, which it repeats for any run before it changes the line or advises
+a restart. On a reinstall it runs before the release is chosen, so a run that
 is later refused for its release can still stop first for a restart, and its
 question can come before the reinstall's. `--help` and `--dry-run` skip it.
 
-**To undo** the settings, run the undo command the bootstrap printed and logged,
-then restart. It puts the old line back only while the boot line is still the
-one the bootstrap wrote, so a line changed since (a drive cloned with new
-partition IDs, or an edit by `raspi-config`) is never replaced by a stale one:
-
-```sh
-echo '<sha256 of the new line>  /boot/firmware/cmdline.txt' | sha256sum -c --quiet \
-  && sudo cp /boot/firmware/cmdline.txt.before-morebees-nvme /boot/firmware/cmdline.txt
-sudo reboot
-```
-
-When the check fails (`FAILED`), nothing is copied: remove the three settings
-from the end of the line by hand instead. The log names the copy when it has a
-dated name. On a drive known to disconnect, the next run of the bootstrap adds
-the settings again, unless it is given `--no-nvme-power-settings`.
+**To undo** the settings, copy the undo command from the bootstrap's output or
+its log (the line `undo command:`), run it, then restart (`sudo reboot`). It
+puts the old line back only while the boot line is still the one the bootstrap
+wrote and the copy still the line before, so a line changed since (a drive
+cloned with new partition IDs, or an edit by `raspi-config`) is never replaced
+by a stale one, nor by a copy that changed; and it writes the line through to
+the drive before the restart. It names the copy the bootstrap made, which has a
+date in its name when an older copy was there. When its check fails (`FAILED`),
+nothing is copied: remove by hand the settings the bootstrap added (the log's
+`line before:` and `line after:` show which) instead. On a drive known to
+disconnect, the next run of the bootstrap adds the settings again, unless it is
+given `--no-nvme-power-settings`.
 
 When a lab finds another model that disconnects, a part of its model name, as
 `/sys/block/nvme0n1/device/model` gives it, goes into `NVME_DROP_MODELS` in
@@ -224,10 +242,14 @@ Bootstrap flags, for a Raspberry Pi 5 that starts from an NVMe drive (see
 
 - `--add-nvme-power-settings` adds the NVMe power settings without asking, also
   when there is no terminal to ask on, for example
-  `bash "$mb" --add-nvme-power-settings`.
+  `bash "$mb" --add-nvme-power-settings`. When the line cannot take them (one it
+  will not read, another value for one of them, or a bare `--`), the run stops
+  with status 3, as for a drive known to disconnect.
 - `--no-nvme-power-settings` never adds them and never stops for them, also on a
-  drive known to disconnect, and says what that leaves: for a Pi whose settings
-  were taken off on purpose, or one where they cause trouble.
+  drive known to disconnect, and says what that leaves, the running system
+  included (settings on the line that the Pi has not restarted with yet): for a
+  Pi whose settings were taken off on purpose, or one where they cause trouble.
+  An empty boot line still stops the run.
 
 The two together are refused, with nothing changed (status 3).
 
@@ -263,7 +285,7 @@ stops before the installer runs, and says what it means:
 | 2 | Installed with problems; the installer's log names them. |
 | 3 | Stopped before installing; nothing was changed. The message above says why. |
 | 4 | The reinstall did not finish, and the previous installation was put back. |
-| 5 | The bootstrap added the NVMe power settings to the boot line and stopped before installing, or found that restart still to come. Restart the Pi, then run the same command again. An installer that stops with 5 makes the bootstrap exit 1, with a failure report. |
+| 5 | The bootstrap added the NVMe power settings to the boot line and stopped before installing, or found that restart still to come. Restart the Pi, then run the same command again. No other stop ends with 5: an installer that stops with 5 makes the bootstrap exit 1, with a failure report, and so does any other 5. |
 | 129, 130, 143 | Interrupted. Run the same command again: it finishes or undoes what was started. |
 | 1 or another | Something failed; a failure report to copy and paste is printed. |
 
@@ -337,22 +359,25 @@ true: the deploy key reached GitHub during the run, and the app runs from
 - **"could not register the deploy key automatically"**: registering deploy keys
   needs repo-admin permission. The public key is printed; send it to an admin to
   add under *Settings*, *Deploy keys* (read-only), then re-run the printed command.
-- **"MoreBees is in use"**: an `--only` run of phase 20, 70, 75 or 90 found a
-  MoreBees window, a task, the hardware setup, or a camera session. Let it finish
-  or close it, then run the command again.
+- **"MoreBees is in use"**: an `--only` run of phase 20, 70, 75 or 90, or on a
+  Pi 5 on NVMe any run that would change the boot line or advise a restart,
+  found a MoreBees window, a task, the hardware setup, or a camera session. Let
+  it finish or close it, then run the command again.
 - **`sha256sum: WARNING: 1 computed checksum did NOT match`**: the download is not
   the pinned file. Nothing was run. Copy the line again from this README.
 - **A Pi 5's NVMe drive disconnects** (`nvme nvme0: controller is down` in
   `journalctl -k`, and the Pi can no longer write to its disk): restart the Pi.
-  During a first install, run the one-liner again with
-  `--add-nvme-power-settings` at the end, or answer `y` when the bootstrap asks:
-  it adds the NVMe power settings to the boot line and stops with status 5;
-  restart the Pi again and run the same command once more. On a Pi that already
-  has MoreBees, close MoreBees, then run the one-liner with
+  If the bootstrap has not yet said "MoreBees is already installed on this Pi",
+  run the one-liner again with `--add-nvme-power-settings` at the end, or answer
+  `y` when the bootstrap asks: it adds the NVMe power settings to the boot line
+  and stops with status 5; restart the Pi again and run the same command once
+  more. Once it says so, close MoreBees, then run the one-liner with
   `--only 10 --add-nvme-power-settings` at the end: the bootstrap adds the
   settings and stops with status 5 before phase 10 runs, so nothing is
-  reinstalled, and after the restart nothing more is needed. To undo the
-  settings, see
+  reinstalled, and after the restart nothing more is needed. When the line has
+  them already, nothing is added and phase 10 (the system packages) runs again,
+  which installs nothing new: it refreshes the package lists and finds its
+  packages installed. To undo the settings, see
   [A Raspberry Pi 5 that starts from an NVMe drive](#a-raspberry-pi-5-that-starts-from-an-nvme-drive).
 
 ## For maintainers
@@ -361,7 +386,9 @@ true: the deploy key reached GitHub during the run, and the app runs from
 
 `bash tests/run_tests.sh` runs the bootstrap end to end in a sandbox, with `gh`,
 `sudo` and the installers stubbed, a stand-in device tree, boot folder, sysfs,
-boot ID, `lsblk` and kernel log for the NVMe check, and real git against a small
+boot ID, `lsblk`, `sha256sum` (GNU's `-c --quiet`, which macOS lacks, so that the
+undo command runs as printed) and kernel log for the NVMe check, and real git
+against a small
 stand-in for the app repository (Linux or macOS; it needs git and bash). No test
 reads or changes the computer it runs on. Every shell file must be clean under
 ShellCheck 0.11.0: `shellcheck bootstrap.sh scripts/*.sh tests/*.sh`.
