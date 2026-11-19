@@ -107,7 +107,8 @@ when the Pi's own deploy key cannot fetch the release it needs.
   `camera` need an installer from v0.5.0-rc.1 or later, and an older installer
   runs nothing for a phase it does not know (v0.4.9 has no names and no phase
   75), while still ending with status 0. `--help` shows the installed release's
-  phases.
+  phases. `--only=90` works too: the bootstrap passes it on as `--only 90`, the
+  form every installer reads, and the same for `--skip-phase`.
 - On any Pi with an earlier install, phases 20 (`daqhats`), 70 (`blue_green`), 75
   (`camera`) and 90 (`hardware`) stop or replace what a running MoreBees uses, so
   before an `--only` run of one of them the bootstrap checks that no MoreBees

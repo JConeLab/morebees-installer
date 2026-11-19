@@ -278,6 +278,25 @@ parse_role() {
     fi
 }
 
+split_equals_forms() {
+    # Every released standalone installer reads --only and --skip-phase as two
+    # words ("--only 20") and refuses "--only=20" as an unknown option, while
+    # this script accepts both. Every hand-off forwards ARGS, so rewriting the
+    # = forms here gives an installed Pi's installer, of any version, the form
+    # it reads. The lab wizard has neither option: the terminal role's
+    # arguments are forwarded as given.
+    [[ "$ROLE" == standalone ]] || return 0
+    local a split=()
+    for a in ${ARGS[@]+"${ARGS[@]}"}; do
+        case "$a" in
+            --only=*)       split+=(--only "${a#--only=}") ;;
+            --skip-phase=*) split+=(--skip-phase "${a#--skip-phase=}") ;;
+            *)              split+=("$a") ;;
+        esac
+    done
+    ARGS=(${split[@]+"${split[@]}"})
+}
+
 ensure_prereqs() {
     BOOTSTRAP_STEP="prerequisites"
     local missing=() cmd
@@ -2213,6 +2232,7 @@ main() {
     [[ $(id -u) -ne 0 ]] || die "run as your normal user, not root -- it will sudo when needed."
 
     parse_role "$@"
+    split_equals_forms                 # --only=<k> becomes --only <k>, the form every installer reads
     set -- "${ARGS[@]+"${ARGS[@]}"}"   # role flags consumed; forward the rest
 
     # Piped from curl, stdin is the pipe; reattach the real terminal so the

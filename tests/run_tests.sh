@@ -2031,6 +2031,33 @@ for n in 200 800 $((size - 24)) $((size - 17)) $((size - 11)) $((size - 2)); do
 done
 done_sb
 
+echo "63. --only=<k> and --skip-phase=<k> reach the standalone installer as two words"
+installed_sandbox v0.4.9 no
+run_bootstrap -- --standalone --only=75
+check "an installed Pi: exit 0, its installer ran" eval 'rc_is 0 && event "installer ran"'
+check "... with --only and 75 as two arguments" \
+    test "$(grep '^arg=' "$CUR_SB/installer_call.txt" | tr '\n' ' ')" = "arg=--only arg=75 "
+check "... and the log names them as forwarded" \
+    grep -qF "arguments for the installer: --only 75" "$(the_log)"
+done_sb
+installed_sandbox v0.4.9 no
+run_bootstrap -- --standalone --only=camera --skip-phase=20 --verbose
+check "each = form split, the other options as given, in order" \
+    test "$(grep '^arg=' "$CUR_SB/installer_call.txt" | tr '\n' ' ')" = "arg=--only arg=camera arg=--skip-phase arg=20 arg=--verbose "
+done_sb
+fresh_sandbox
+run_bootstrap -- --standalone --skip-phase=20
+check "a new Pi: exit 0" rc_is 0
+check "... the installer gets --skip-phase and 20 as two arguments" \
+    test "$(grep '^arg=' "$CUR_SB/installer_call.txt" | tr '\n' ' ')" = "arg=--skip-phase arg=20 "
+done_sb
+fresh_sandbox
+run_bootstrap -- --terminal --only=20
+check "the terminal role: the wizard ran" event "wizard ran"
+check "... with its arguments as given" \
+    test "$(grep '^arg=' "$CUR_SB/installer_call.txt" | tr '\n' ' ')" = "arg=--only=20 "
+done_sb
+
 echo
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
