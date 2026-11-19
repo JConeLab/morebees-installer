@@ -130,6 +130,12 @@ if [ -n "${STUB_EDIT_BOOT_ON:-}" ] && [ "$1" = "$STUB_EDIT_BOOT_ON" ]; then
     # Someone else edits the boot line while the bootstrap works on it.
     printf ' edited' >> "$STUB_DIR/boot/firmware/cmdline.txt"
 fi
+# STUB_SUDO_PRETEND: these commands report success and do nothing (tee reads
+# its input first), so a run gets past them without touching the host.
+case " ${STUB_SUDO_PRETEND:-} " in *" $1 "*)
+    if [ "$1" = tee ]; then cat >/dev/null || true; fi
+    exit 0 ;;
+esac
 case "$1" in apt-get|install|tee|chmod) echo "stub sudo refuses: $*" >&2; exit 1 ;; esac
 if [ "$1" = rm ]; then
     # Root could remove what the operator cannot: give the operator the rights.
@@ -159,8 +165,9 @@ fi
 if [ -n "${STUB_SUDO_FAIL_AFTER:-}" ] && [ "$1" = "$STUB_SUDO_FAIL_AFTER" ]; then
     post="$post fail"
 fi
-# STUB_SUDO_KILL_AFTER: the command runs, then the bootstrap dies at once, as
-# when the power is cut: no trap runs.
+# STUB_SUDO_KILL_AFTER: the command runs, then the bootstrap is killed at once
+# (SIGKILL): no trap runs. Unlike a power cut, what it wrote stays in the page
+# cache, so this shows the order of its writes, not that they reached a disk.
 if [ -n "${STUB_SUDO_KILL_AFTER:-}" ] && [ "$1" = "$STUB_SUDO_KILL_AFTER" ]; then
     post="$post kill"
 fi
@@ -178,18 +185,28 @@ EOF
 # or -c with "<sum>  <file>" lines on standard input, as the undo command runs.
 cat > "$TEMPLATES/sha256sum" <<'EOF'
 #!/usr/bin/env bash
+# As GNU's: FAILED lines on standard output; status 1 for a mismatch, a missing
+# file, or no well-formed line at all.
 hash_of() {
+    [ -f "$1" ] || return 1
     if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1"; else /usr/bin/sha256sum "$1"; fi | cut -d' ' -f1
 }
 if [ "${1:-}" = -c ]; then
-    rc=0
+    rc=0 lines=0
     while read -r sum file; do
-        [ -n "$sum" ] || continue
-        if [ "$(hash_of "$file" 2>/dev/null)" != "$sum" ]; then echo "$file: FAILED" >&2; rc=1; fi
+        case "$sum" in *[!0-9a-f]* | "") continue ;; esac
+        [ "${#sum}" = 64 ] && [ -n "$file" ] || continue
+        lines=$((lines + 1))
+        if [ "$(hash_of "$file" 2>/dev/null)" != "$sum" ]; then echo "$file: FAILED"; rc=1; fi
     done
+    if [ "$lines" = 0 ]; then echo "sha256sum: -: no properly formatted checksum lines found" >&2; exit 1; fi
     exit "$rc"
 fi
-for f in "$@"; do printf '%s  %s\n' "$(hash_of "$f")" "$f"; done
+rc=0
+for f in "$@"; do
+    if s="$(hash_of "$f")"; then printf '%s  %s\n' "$s" "$f"; else echo "sha256sum: $f: No such file or directory" >&2; rc=1; fi
+done
+exit "$rc"
 EOF
 
 # lsblk stand-in: the device stack under the root, from $STUB_DIR/lsblk.txt.
@@ -370,7 +387,7 @@ EOF
 
 new_sandbox() {  # new_sandbox <real|stub>: a fresh HOME and stub bin; sets CUR_SB
     CUR_SB="$(mktemp -d)"
-    mkdir -p "$CUR_SB/home" "$CUR_SB/bin" "$CUR_SB/etc/rso" "$CUR_SB/usr/local/bin"
+    mkdir -p "$CUR_SB/home" "$CUR_SB/bin" "$CUR_SB/etc/rso" "$CUR_SB/usr/local/bin" "$CUR_SB/tmp"
     : > "$CUR_SB/stdin.txt"
     : > "$CUR_SB/events.log"
     local f
@@ -490,12 +507,15 @@ run_bootstrap() {  # run_bootstrap [VAR=value ...] -- [bootstrap arguments ...]
     while [ $# -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
     if [ "${1:-}" = "--" ]; then shift; fi
     nvme_seams
+    # TMPDIR in the sandbox: a run that is killed leaves its temporary files
+    # there, never in the host's /tmp. The subshell's own stderr, where bash
+    # reports a killed child, is dropped.
     ( cd "$CUR_SB/home" && env -i HOME="$CUR_SB/home" PATH="$CUR_SB/bin:/usr/bin:/bin" \
           STUB_DIR="$CUR_SB" STUB_REAL_GIT="$REAL_GIT" TERM=dumb GIT_CONFIG_NOSYSTEM=1 \
-          GIT_SSH_COMMAND=false MB_BIN_DIR="$CUR_SB/usr/local/bin" \
+          GIT_SSH_COMMAND=false MB_BIN_DIR="$CUR_SB/usr/local/bin" TMPDIR="$CUR_SB/tmp" \
           MB_ROLE_FILE="$CUR_SB/etc/rso/role" MB_RIGCAM_ENV="$CUR_SB/etc/rso/rigcam.env" \
           "${NVME_SEAMS[@]}" ${envs[@]+"${envs[@]}"} "$BASH" "$SCRIPT" "$@" \
-          <"$CUR_SB/stdin.txt" >"$CUR_SB/out.txt" 2>&1 )
+          <"$CUR_SB/stdin.txt" >"$CUR_SB/out.txt" 2>&1 ) 2>/dev/null
     echo $? > "$CUR_SB/rc.txt"
 }
 
@@ -513,7 +533,7 @@ run_bootstrap_cut() {  # run_bootstrap, with the output going away during the in
     ( trap '' PIPE
       cd "$CUR_SB/home" && env -i HOME="$CUR_SB/home" PATH="$CUR_SB/bin:/usr/bin:/bin" \
           STUB_DIR="$CUR_SB" STUB_REAL_GIT="$REAL_GIT" TERM=dumb GIT_CONFIG_NOSYSTEM=1 \
-          GIT_SSH_COMMAND=false MB_BIN_DIR="$CUR_SB/usr/local/bin" \
+          GIT_SSH_COMMAND=false MB_BIN_DIR="$CUR_SB/usr/local/bin" TMPDIR="$CUR_SB/tmp" \
           MB_ROLE_FILE="$CUR_SB/etc/rso/role" MB_RIGCAM_ENV="$CUR_SB/etc/rso/rigcam.env" \
           "${NVME_SEAMS[@]}" STUB_CUT_OUTPUT=1 ${envs[@]+"${envs[@]}"} "$BASH" "$SCRIPT" "$@" \
           <"$CUR_SB/stdin.txt" >"$CUR_SB/out.fifo" 2>&1 )
@@ -1046,7 +1066,7 @@ check "v0.4.9's real usage text: not the target, and no newer release: the card"
     eval 'rc_is 3 && out_has "MoreBees v0.4.9 is installed on this Pi." && no_event "installer ran"'
 done_sb
 
-# --- 27 to 57: the NVMe power settings on a Raspberry Pi 5 ------------------------
+# --- 27 to 61: the NVMe power settings on a Raspberry Pi 5 ------------------------
 
 NL=$'\n'
 PI5_LINE='console=serial0,115200 console=tty1 root=PARTUUID=0a1b2c3d-02 rootfstype=ext4 fsck.repair=yes rootwait quiet splash plymouth.ignore-serial-consoles'
@@ -1108,7 +1128,7 @@ printf '\n' > "$CUR_SB/tty"         # a terminal, where a question would be answ
 run_bootstrap -- --standalone
 log="$(the_log)"
 b="$CUR_SB/boot/firmware"
-undo="printf '%s  %s\n' $(sha_of "$b/cmdline.txt") $b/cmdline.txt $(sha_of "$CUR_SB/line_before") $b/cmdline.txt.before-morebees-nvme | sha256sum -c --quiet && sudo cp $b/cmdline.txt.before-morebees-nvme $b/cmdline.txt && sudo sync -- $b/cmdline.txt $b"
+undo="printf '%s  %s\n' $(sha_of "$b/cmdline.txt") $b/cmdline.txt $(sha_of "$CUR_SB/line_before") $b/cmdline.txt.before-morebees-nvme | sha256sum -c --quiet && sudo cp $b/cmdline.txt.before-morebees-nvme $b/cmdline.txt && sudo sync -- $b/cmdline.txt $b && rm -f -- $(pending_file)"
 check "exit 5" rc_is 5
 check "the boot line is the old line plus the three settings, byte for byte, still with no newline" \
     line_is "$PI5_LINE $NVME_ADDED"
@@ -1125,9 +1145,11 @@ check "the log has both SHA-256 sums and the undo command" \
 check "the restart is recorded for this boot and this line" \
     test "$(cat "$(pending_file)")" = "$(cat "$CUR_SB/boot_id") $(sha_of "$b/cmdline.txt")"
 check "the new line and its copy were written through to the drive before the move" \
-    eval 'event_before "sudo sync -- $b/cmdline.txt.morebees-new." "sudo mv -f -- $b/cmdline.txt.morebees-new." && grep -F "sudo sync -- $b/cmdline.txt.morebees-new." "$CUR_SB/events.log" | grep -qF " $b/cmdline.txt.before-morebees-nvme"'
-check "after the move, the line and then the folder were written through to the drive; no plain sync" \
-    eval 'event_before "sudo mv -f -- $b/cmdline.txt.morebees-new." "sudo sync -- $b/cmdline.txt $b" && grep -qxF "sudo sync -- $b/cmdline.txt $b" "$CUR_SB/events.log" && ! grep -qxF "sync " "$CUR_SB/events.log"'
+    eval 'event_before "sudo sync -- $b/cmdline.txt.morebees-new." "sudo mv -f -- $b/cmdline.txt.morebees-new." && grep -F "sudo sync -- $b/cmdline.txt.morebees-new." "$CUR_SB/events.log" | grep -qF " $b/cmdline.txt.before-morebees-nvme $b"'
+check "after the move, the boot partition, then the line and the folder, were written through to the drive; no plain sync" \
+    eval 'event_before "sudo mv -f -- $b/cmdline.txt.morebees-new." "sudo sync -f -- $b/cmdline.txt" && event_before "sudo sync -f -- $b/cmdline.txt" "sudo sync -- $b/cmdline.txt $b" && grep -qxF "sudo sync -- $b/cmdline.txt $b" "$CUR_SB/events.log" && ! grep -qxF "sync " "$CUR_SB/events.log"'
+check "the log's undo line holds the command alone" \
+    eval 'test "$(grep -F "NVMe power settings: undo command: " "$log" | sed "s/.*undo command: //")" = "$undo"'
 check "nothing was asked, though a terminal was there" eval '! asked'
 check "says to restart, then run the same command again" out_has "Restart the Pi (sudo reboot), then run the same command again."
 check "stopped before the sign-in, the clone and the installer" \
@@ -1135,8 +1157,8 @@ check "stopped before the sign-in, the clone and the installer" \
 check "the new line was moved into place with sudo" event "sudo mv -f -- $b/cmdline.txt.morebees-new."
 : > "$CUR_SB/events.log"
 run_undo "$undo"
-check "the undo, pasted as printed, puts the old line back and writes it through" \
-    eval 'cmp -s "$CUR_SB/line_before" "$b/cmdline.txt" && event "sudo sync -- $b/cmdline.txt $b"'
+check "the undo, pasted as printed, puts the old line back, writes it through and removes the restart record" \
+    eval 'cmp -s "$CUR_SB/line_before" "$b/cmdline.txt" && event "sudo sync -- $b/cmdline.txt $b" && test ! -e "$(pending_file)"'
 done_sb
 
 echo "28. this boot's kernel log shows a drive disconnecting: the same, for a drive not on the list"
@@ -1297,7 +1319,13 @@ for pair in "two lines|has more than one line" \
     check "$what: the boot line as it was, no copy or temporary file left" \
         eval 'line_kept && test "$(boot_files)" = "cmdline.txt "'
     check "$what: exit 3 before the sign-in and the installer, with the settings to add by hand" \
-        eval 'rc_is 3 && no_event "gh auth" && no_event "installer ran" && out_has "To add them by hand, put these at the end of the one line in"'
+        eval 'rc_is 3 && no_event "gh auth" && no_event "installer ran" && out_has "after a space: $NVME_ADDED"'
+    case "$what" in
+        "a Windows line ending") check "$what: it gives the command that removes the carriage return" \
+            out_has "  sudo sed -i 's/\\r\$//' $CUR_SB/boot/firmware/cmdline.txt" ;;
+        "two lines") check "$what: it says to make it one line again" out_has "To fix it, make it one line again" ;;
+        *) check "$what: the settings end their line" out_has "To add them by hand, put these at the end of the one line in $CUR_SB/boot/firmware/cmdline.txt, after a space: $NVME_ADDED" ;;
+    esac
     check "$what: no restart is recorded" test ! -e "$(pending_file)"
     done_sb
 done
@@ -1309,7 +1337,7 @@ run_bootstrap -- --standalone
 check "another value on the line, on a drive known to disconnect: left to the operator, and exit 3 before the installer" \
     eval 'out_has "sets pcie_aspm=force (needs pcie_aspm=off), which the bootstrap leaves to you" && line_kept && rc_is 3 && no_event "installer ran"'
 check "... with how to edit the line, and the flag that goes on without them" \
-    eval 'out_has "so that it holds $NVME_ADDED, with no other value for them" && out_has "run the same command with --no-nvme-power-settings"'
+    eval 'out_has "so that it holds these, with no other value for them and all before any bare --: $NVME_ADDED" && out_has "run the same command with --no-nvme-power-settings"'
 done_sb
 fresh_sandbox
 as_pi5_nvme "$OTHER_DRIVE"
@@ -1399,7 +1427,7 @@ printf '%s %s' "$PI5_LINE" "$NVME_ADDED" > "$CUR_SB/boot/firmware/cmdline.txt"
 keep_line
 run_bootstrap -- --standalone
 check "a drive not on the list: says a restart is still to come, changes nothing, and carries on" \
-    eval 'out_has "but this system did not start with them: restart the Pi to use them." && line_kept && rc_is 0 && event "installer ran"'
+    eval 'out_has "but this system did not start with them: to use them, restart the Pi (sudo reboot)." && line_kept && rc_is 0 && event "installer ran"'
 done_sb
 new_sandbox stub
 as_pi5_nvme "$KC3000"
@@ -1450,6 +1478,10 @@ for pair in "staged|did not read back as the old line plus" \
     check "$what: the boot line byte for byte as before, nothing left in the boot folder" \
         eval 'line_kept && test "$(boot_files)" = "cmdline.txt "'
     check "$what: no restart recorded" test ! -e "$(pending_file)"
+    if [ "$what" = moved ]; then
+        check "$what: the copy put back is written through to the drive" \
+            eval 'event_before "sudo cp -- $CUR_SB/boot/firmware/cmdline.txt.before-morebees-nvme $CUR_SB/boot/firmware/cmdline.txt" "sudo sync -- $CUR_SB/boot/firmware/cmdline.txt $CUR_SB/boot/firmware"'
+    fi
     done_sb
 done
 new_sandbox stub
@@ -1506,9 +1538,37 @@ b="$CUR_SB/boot/firmware"
 cp "$b/cmdline.txt" "$b/cmdline.txt.before-morebees-nvme"
 : > "$b/cmdline.txt"
 run_bootstrap -- --standalone --no-nvme-power-settings
-check "an empty line and --no-nvme-power-settings: still exit 3, naming the copy to put back after a check of its root=" \
-    eval 'rc_is 3 && no_event "installer ran" && out_has "is in $b/cmdline.txt.before-morebees-nvme: check that its root= names this Pi" && out_has "sudo cp $b/cmdline.txt.before-morebees-nvme $b/cmdline.txt && sudo sync --"'
+check "an empty line and --no-nvme-power-settings: still exit 3, naming the copy that holds this Pi's root, to put back" \
+    eval 'rc_is 3 && no_event "installer ran" && out_has "A copy the bootstrap made, $b/cmdline.txt.before-morebees-nvme, holds the root this Pi started from (root=PARTUUID=0a1b2c3d-02)" && out_has "Put it back with: sudo cp $b/cmdline.txt.before-morebees-nvme $b/cmdline.txt && sudo sync -- $b/cmdline.txt $b"'
 done_sb
+new_sandbox stub
+as_pi5_nvme "$KC3000"
+b="$CUR_SB/boot/firmware"
+printf 'console=tty1 root=PARTUUID=aaaaaaaa-02 rootwait' > "$b/cmdline.txt.before-morebees-nvme"   # from another rig
+: > "$b/cmdline.txt"
+run_bootstrap -- --standalone
+check "a copy that holds another root is not named; it says which root the line must hold" \
+    eval 'rc_is 3 && out_hasnt "Put it back with" && out_has "it must hold the root this Pi started from: root=PARTUUID=0a1b2c3d-02"'
+done_sb
+for what in "NUL bytes" "no root=" "no root= on the first of two lines" "no root= and a Windows line ending"; do
+    for drive in "$KC3000" "$OTHER_DRIVE"; do
+        new_sandbox stub
+        as_pi5_nvme "$drive"
+        b="$CUR_SB/boot/firmware"
+        case "$what" in
+            "NUL bytes") head -c 139 /dev/zero > "$b/cmdline.txt" ;;
+            "no root=") printf 'console=tty1 quiet splash' > "$b/cmdline.txt" ;;
+            # The firmware reads the first line only.
+            "no root= on the first of two lines") printf 'console=tty1 quiet\n%s\n' "$PI5_LINE" > "$b/cmdline.txt" ;;
+            "no root= and a Windows line ending") printf 'console=tty1 quiet splash\r\n' > "$b/cmdline.txt" ;;
+        esac
+        keep_line
+        run_bootstrap -- --standalone
+        check "$what, $drive: exit 3, the Pi would not start from it, the line as it was, and no restart or settings advised" \
+            eval 'rc_is 3 && out_has "holds no root= that the kernel would read: the Pi would not start from it" && line_kept && out_hasnt "sudo reboot" && out_hasnt "after a space" && no_event "installer ran"'
+        done_sb
+    done
+done
 
 echo "41. a copy of the line that fails part way leaves nothing under the copy's name"
 new_sandbox stub
@@ -1673,6 +1733,8 @@ run_bootstrap STUB_SUDO_KILL_AFTER=mv -- --standalone
 log="$(the_log)"
 check "a run that dies just after the move: the log has the line after and the undo, and the restart is recorded" \
     eval 'line_is "$PI5_LINE $NVME_ADDED" && grep -qF "line after:  $PI5_LINE $NVME_ADDED" "$log" && grep -qF "undo command: printf" "$log" && test -s "$(pending_file)"'
+check "... and what it left in its temporary folder stays in the sandbox" \
+    eval 'ls "$CUR_SB/tmp" | grep -q "^morebees-cmdline\."'
 done_sb
 
 echo "49. a sudo that refuses: nothing else is asked of it, and nothing is left to remove"
@@ -1705,7 +1767,8 @@ done_sb
 echo "52. status 5 means only the restart: an installer's 5 on a --dry-run becomes 1"
 installed_sandbox v0.4.9 no
 run_bootstrap STUB_INSTALLER_RC=5 -- --standalone --dry-run
-check "--dry-run on an installed Pi whose installer ends with 5: the bootstrap ends with 1" rc_is 1
+check "--dry-run on an installed Pi whose installer ends with 5: the bootstrap ends with 1, says why, with the failure report" \
+    eval 'rc_is 1 && out_has "only the NVMe restart may end a run with, so the run ends with 1" && out_has "bootstrap failure report"'
 done_sb
 
 echo "53. no restart is advised while MoreBees runs"
@@ -1745,6 +1808,8 @@ new_sandbox stub
 as_pi5_nvme "$KC3000"
 mkdir -p "$(pending_file)"     # a folder where the record goes
 run_bootstrap -- --standalone
+check "the log says why the record could not be made" \
+    eval 'grep -qF "the pending restart could not be recorded: $(pending_file) could not be written" "$(the_log)"'
 check "exit 5, the settings added, and it says a run before the restart would not stop" \
     eval 'rc_is 5 && line_is "$PI5_LINE $NVME_ADDED" && out_has "could not record the restart it needs"'
 done_sb
@@ -1774,7 +1839,7 @@ for answer in y Enter; do
     if [ "$answer" = y ]; then printf 'y\n' > "$CUR_SB/tty"; else printf '\n' > "$CUR_SB/tty"; fi
     run_bootstrap -- --standalone
     check "$answer: it says what is wrong, why they are wanted and how to fix it, then asks" \
-        eval 'out_has "sets pcie_aspm=force (needs pcie_aspm=off)" && out_has "They are wanted because this drive ($KC3000)" && out_has "so that it holds $NVME_ADDED" && out_has "Go on without them? Nothing on the boot line changes. [y/N]"'
+        eval 'out_has "sets pcie_aspm=force (needs pcie_aspm=off)" && out_has "They are wanted because this drive ($KC3000)" && out_has "so that it holds these, with no other value for them and all before any bare --: $NVME_ADDED" && out_has "Go on without them? Nothing on the boot line changes. [y/N]"'
     if [ "$answer" = y ]; then
         check "y: the line as it was, and the install goes on, exit 0; the answer is logged" \
             eval 'line_kept && rc_is 0 && event "installer ran" && grep -qF "go on without them; answer [y]: yes" "$(the_log)"'
@@ -1800,6 +1865,76 @@ printf 'y\n' > "$CUR_SB/tty"
 run_bootstrap -- --standalone
 check "the settings on the line, but the Pi did not start with them: it says so, asks, and y goes on, exit 0" \
     eval 'out_has "it does not start from" && out_has "Go on without them?" && rc_is 0 && event "installer ran"'
+done_sb
+
+echo "58. a Ctrl+C while the restart is being recorded is held off, as is one during the move"
+new_sandbox stub
+as_pi5_nvme "$KC3000"
+# mkdir stand-in, in this sandbox only: once the record of the change is in the
+# log, its next call (the restart record's folder) sends SIGINT to the bootstrap.
+cat > "$CUR_SB/bin/mkdir" <<'EOF'
+#!/usr/bin/env bash
+if [ ! -e "$STUB_DIR/interrupted" ] && grep -qs "NVMe power settings: changing" "$HOME"/.local/state/morebees/bootstrap-*.log; then
+    : > "$STUB_DIR/interrupted"
+    # The outermost bootstrap process: a subshell it forked has the same args.
+    pid="$PPID" top=""
+    while [ -n "$pid" ] && [ "$pid" != 1 ]; do
+        if /bin/ps -o args= -p "$pid" 2>/dev/null | grep -q "bootstrap.sh"; then top="$pid"; fi
+        pid="$(/bin/ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    done
+    [ -z "$top" ] || kill -INT "$top"
+fi
+exec /bin/mkdir "$@"
+EOF
+chmod +x "$CUR_SB/bin/mkdir"
+run_bootstrap -- --standalone
+check "interrupted while the restart is recorded: the change goes through, exit 5, recorded" \
+    eval 'test -e "$CUR_SB/interrupted" && rc_is 5 && line_is "$PI5_LINE $NVME_ADDED" && test -s "$(pending_file)"'
+done_sb
+
+echo "59. the running check names what runs instead of advising a restart"
+for drive in "$OTHER_DRIVE" "$KC3000"; do
+    installed_sandbox v0.4.9 no
+    as_pi5_nvme "$drive"
+    printf '%s %s' "$PI5_LINE" "$NVME_ADDED" > "$CUR_SB/boot/firmware/cmdline.txt"
+    echo "4321 python3 -m renandstimpi.gui_launcher.app" > "$CUR_SB/ps.txt"
+    run_bootstrap -- --standalone --only 40
+    check "$drive, the settings on the line but not in effect, MoreBees running: it names what runs, and no sudo reboot" \
+        eval 'out_has "MoreBees is in use, and a restart would end it" && out_has "once what is running has finished and MoreBees is closed, restart the Pi" && out_hasnt "sudo reboot"'
+    if [ "$drive" = "$OTHER_DRIVE" ]; then
+        check "... a drive not on the list: the --only run goes on, exit 0" eval 'rc_is 0 && event "installer ran"'
+    else
+        check "... a drive known to disconnect: no terminal to ask on, exit 3" eval 'rc_is 3 && no_event "installer ran"'
+    fi
+    done_sb
+done
+
+echo "60. a GitHub CLI key that cannot be downloaded stops the run with a failure report"
+if [ -x /usr/bin/gh ] || [ -x /bin/gh ]; then
+    echo "  skip - this computer has gh in /usr/bin, which the sandbox's PATH cannot hide"
+else
+fresh_sandbox
+rm -f "$CUR_SB/bin/gh"
+cat > "$CUR_SB/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+echo "curl $*" >> "$STUB_DIR/events.log"
+echo "curl: (5) Could not resolve proxy" >&2
+exit 5
+EOF
+chmod +x "$CUR_SB/bin/curl"
+run_bootstrap STUB_SUDO_PRETEND="install tee chmod" -- --standalone
+check "exit 1, it says the key could not be downloaded, with the failure report" \
+    eval 'rc_is 1 && out_has "could not download the GitHub CLI'"'"'s signing key." && out_has "bootstrap failure report" && no_event "installer ran"'
+done_sb
+fi
+
+echo "61. a temporary file of this boot, another run's, is left alone"
+new_sandbox stub
+as_pi5_nvme "$KC3000"
+printf 'another run at work' > "$CUR_SB/boot/firmware/cmdline.txt.morebees-new.0c1b0e1d.ABC123"
+run_bootstrap -- --standalone
+check "the change is made, and the other run's file is still there" \
+    eval 'rc_is 5 && test -e "$CUR_SB/boot/firmware/cmdline.txt.morebees-new.0c1b0e1d.ABC123"'
 done_sb
 
 echo
