@@ -107,7 +107,8 @@ when the Pi's own deploy key cannot fetch the release it needs.
   `camera` need an installer from v0.5.0-rc.1 or later, and an older installer
   runs nothing for a phase it does not know (v0.4.9 has no names and no phase
   75), while still ending with status 0. `--help` shows the installed release's
-  phases.
+  phases. `--only=90` works too: the bootstrap passes it on as `--only 90`, the
+  form every installer reads, and the same for `--skip-phase`.
 - On any Pi with an earlier install, phases 20 (`daqhats`), 70 (`blue_green`), 75
   (`camera`) and 90 (`hardware`) stop or replace what a running MoreBees uses, so
   before an `--only` run of one of them the bootstrap checks that no MoreBees
@@ -125,9 +126,10 @@ when the Pi's own deploy key cannot fetch the release it needs.
   download unless the release is missing locally), and that installer asks what
   to do with the data on the Pi: keep it or delete it. Apart from the NVMe
   question below, which comes first, the bootstrap asks nothing itself and
-  passes your options on unchanged (`--reinstall`,
+  passes your options on as given (`--reinstall`,
   `--confirm-delete=...`, `--non-interactive`, `--inventory`, `--skip-phase`,
-  `--verbose`, `--allow-older-release`). The temporary copy is removed when the
+  `--verbose`, `--allow-older-release`), except that `--skip-phase=<k>` is
+  passed on as `--skip-phase <k>`. The temporary copy is removed when the
   run ends; when the installer, which runs as root, left files there that you
   cannot remove, the bootstrap removes the copy with sudo.
 - Releases whose installer cannot keep or delete data (the first that can is
@@ -283,7 +285,9 @@ The two together are refused, with nothing changed (status 3).
 
 Wizard flags (Terminal PC): `--skip-taskpi`, `--skip-ml`, `--include-standalone`,
 `--dev-mode` (skip rig-subnet networking on computers without the second network
-port), `--non-interactive`. For example, a Terminal PC without the rig network:
+port), `--non-interactive`, and `--only <phases>` or `--skip-phase <phase>` to run
+or skip wizard phases (`--only 1,4,5` re-deploys the rigs; the `=` forms work too).
+For example, a Terminal PC without the rig network:
 the install line with `--skip-taskpi --skip-ml --dev-mode`; the full lab: with
 `--start-rig-id 01`.
 

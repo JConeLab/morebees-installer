@@ -251,8 +251,9 @@ log_init() {
 
 parse_role() {
     # Consume the bootstrap's own flags, the role and the two NVMe flags;
-    # everything else is forwarded untouched (the installers refuse an option
-    # they do not know).
+    # everything else is forwarded in order, with split_equals_forms writing
+    # --only=<k> and --skip-phase=<k> as two words (the installers refuse an
+    # option they do not know).
     local a
     for a in "$@"; do
         case "$a" in
@@ -276,6 +277,25 @@ parse_role() {
             ROLE="terminal"
         fi
     fi
+}
+
+split_equals_forms() {
+    # Every released standalone installer and lab wizard reads --only and
+    # --skip-phase as two words ("--only 20") and refuses "--only=20" as an
+    # unknown option, while this script accepts both. Every hand-off forwards
+    # ARGS, so rewriting the = forms here gives the installer or wizard of any
+    # version the form it reads. An empty value is left as given, so it is
+    # still refused instead of reaching an installer as an empty list, which
+    # the standalone installer would read as every phase.
+    local a split=()
+    for a in ${ARGS[@]+"${ARGS[@]}"}; do
+        case "$a" in
+            --only=?*)       split+=(--only "${a#--only=}") ;;
+            --skip-phase=?*) split+=(--skip-phase "${a#--skip-phase=}") ;;
+            *)               split+=("$a") ;;
+        esac
+    done
+    ARGS=(${split[@]+"${split[@]}"})
 }
 
 ensure_prereqs() {
@@ -2213,6 +2233,7 @@ main() {
     [[ $(id -u) -ne 0 ]] || die "run as your normal user, not root -- it will sudo when needed."
 
     parse_role "$@"
+    split_equals_forms                 # --only=<k> becomes --only <k>, the form every installer reads
     set -- "${ARGS[@]+"${ARGS[@]}"}"   # role flags consumed; forward the rest
 
     # Piped from curl, stdin is the pipe; reattach the real terminal so the
