@@ -35,12 +35,12 @@ pinned commit itself, checks it against the SHA-256 written into the line, and
 runs it only when the check passes:
 
 ```sh
-mb="$(mktemp)" && curl -fsSL -o "$mb" https://raw.githubusercontent.com/JConeLab/morebees-installer/6a034382e1749009fd15d781b45dfcb63d45379e/bootstrap.sh && echo "1c937f12069bca11af434e3e965d27260300719a36e4b2aa7aeda33fc6057405  $mb" | sha256sum -c --quiet - && bash "$mb"
+mb="$(mktemp)" && curl -fsSL -o "$mb" https://raw.githubusercontent.com/JConeLab/morebees-installer/c557be37e2a7456782798687f547e4a1e3b426d0/bootstrap.sh && echo "4b62e2722a662e1d95f1504ebbbdc2a26573de92e7e549223fcffcdf2cea96c1  $mb" | sha256sum -c --quiet - && bash "$mb"
 ```
 
 Whatever is pushed to this repository later, the line runs exactly the file it
-names: commit `6a034382e1749009fd15d781b45dfcb63d45379e`, SHA-256
-`1c937f12069bca11af434e3e965d27260300719a36e4b2aa7aeda33fc6057405`. To pass options, put them after
+names: commit `c557be37e2a7456782798687f547e4a1e3b426d0`, SHA-256
+`4b62e2722a662e1d95f1504ebbbdc2a26573de92e7e549223fcffcdf2cea96c1`. To pass options, put them after
 `bash "$mb"` at the end of the line, for example `bash "$mb" --standalone --only 90`;
 to set a variable, put it before: `RSO_GIT_REF=v0.5.0 bash "$mb"`.
 
