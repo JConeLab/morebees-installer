@@ -915,16 +915,26 @@ else
 fi
 pin_dir="$(mktemp -d)"
 cp "$HERE/README.md" "$pin_dir/README.md"
+cp "$HERE/install.sh" "$pin_dir/install.sh"
 head_commit="$("$REAL_GIT" -C "$HERE" rev-parse HEAD)"
 head_sum="$("$REAL_GIT" -C "$HERE" show "HEAD:bootstrap.sh" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)"
 urls_before="$(grep -c 'morebees-installer/[0-9a-f]\{40\}/bootstrap.sh' "$pin_dir/README.md")"
-if PIN_README="$pin_dir/README.md" bash "$HERE/scripts/pin.sh" HEAD >/dev/null 2>&1 \
+if PIN_README="$pin_dir/README.md" PIN_INSTALL="$pin_dir/install.sh" bash "$HERE/scripts/pin.sh" HEAD >/dev/null 2>&1 \
         && [ "$(grep -c "morebees-installer/$head_commit/bootstrap.sh" "$pin_dir/README.md")" = "$urls_before" ] \
         && grep -q "$head_sum" "$pin_dir/README.md" \
-        && PIN_README="$pin_dir/README.md" bash "$HERE/scripts/pin.sh" --check >/dev/null 2>&1; then
-    t_ok "scripts/pin.sh rewrites every pinned URL and the checksum"
+        && grep -qx "MB_PIN_COMMIT=\"$head_commit\"" "$pin_dir/install.sh" \
+        && grep -qx "MB_PIN_SHA256=\"$head_sum\"" "$pin_dir/install.sh" \
+        && PIN_README="$pin_dir/README.md" PIN_INSTALL="$pin_dir/install.sh" bash "$HERE/scripts/pin.sh" --check >/dev/null 2>&1; then
+    t_ok "scripts/pin.sh writes the commit and the checksum into the README's line and into install.sh"
 else
     t_fail "scripts/pin.sh <commit>"
+fi
+cp "$HERE/README.md" "$pin_dir/README.md"
+sed 's/^MB_PIN_COMMIT="[0-9a-f]*"$/MB_PIN_COMMIT="0123456789abcdef0123456789abcdef01234567"/' "$HERE/install.sh" > "$pin_dir/install.sh"
+if PIN_README="$pin_dir/README.md" PIN_INSTALL="$pin_dir/install.sh" bash "$HERE/scripts/pin.sh" --check >/dev/null 2>&1; then
+    t_fail "an install.sh pin out of step with the README's passed the check"
+else
+    t_ok "an install.sh pin out of step with the README's fails the check"
 fi
 rm -rf "$pin_dir"
 
@@ -1935,6 +1945,90 @@ printf 'another run at work' > "$CUR_SB/boot/firmware/cmdline.txt.morebees-new.0
 run_bootstrap -- --standalone
 check "the change is made, and the other run's file is still there" \
     eval 'rc_is 5 && test -e "$CUR_SB/boot/firmware/cmdline.txt.morebees-new.0c1b0e1d.ABC123"'
+done_sb
+
+echo "62. the short command: install.sh downloads the pinned bootstrap, checks it and runs it"
+if [ "$(tail -1 "$HERE/install.sh")" = '{ main "$@"; exit $?; }' ]; then
+    t_ok "install.sh's last line is its single entry point, in braces"
+else
+    t_fail "install.sh's last line must be: { main \"\$@\"; exit \$?; }"
+fi
+FAKE_COMMIT=0123456789abcdef0123456789abcdef01234567
+install_sandbox() {  # a sandbox where curl serves a stand-in bootstrap at FAKE_COMMIT, and install.sh pins it; sets CUR_SB
+    CUR_SB="$(mktemp -d)"
+    mkdir -p "$CUR_SB/bin" "$CUR_SB/tmp" "$CUR_SB/raw/$FAKE_COMMIT"
+    : > "$CUR_SB/events.log"
+    cp "$TEMPLATES/sha256sum" "$CUR_SB/bin/sha256sum"
+    cat > "$CUR_SB/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+echo "curl $*" >> "$STUB_DIR/events.log"
+out="" url=""
+while [ $# -gt 0 ]; do
+    case "$1" in -o) out="$2"; shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac
+done
+src="$STUB_DIR/raw/${url#https://raw.githubusercontent.com/JConeLab/morebees-installer/}"
+[ -f "$src" ] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
+cp "$src" "$out"
+EOF
+    cat > "$CUR_SB/raw/$FAKE_COMMIT/bootstrap.sh" <<'EOF'
+#!/usr/bin/env bash
+# One [arg] per argument; with none, printf would still print one "[]".
+{ printf 'args:'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'
+  printf 'ref: %s\n' "${RSO_GIT_REF:-}"
+  first=""; IFS= read -r first || true
+  printf 'stdin: %s\n' "${first:-<nothing>}"; } > "$STUB_DIR/bootstrap_ran.txt"
+exit "${FAKE_RC:-0}"
+EOF
+    chmod +x "$CUR_SB"/bin/*
+    sed -E -e "s/^MB_PIN_COMMIT=\"[0-9a-f]{40}\"$/MB_PIN_COMMIT=\"$FAKE_COMMIT\"/" \
+        -e "s/^MB_PIN_SHA256=\"[0-9a-f]{64}\"$/MB_PIN_SHA256=\"$(sha_of "$CUR_SB/raw/$FAKE_COMMIT/bootstrap.sh")\"/" \
+        "$HERE/install.sh" > "$CUR_SB/install.sh"
+}
+run_install() {  # run_install [VAR=value ...] -- <shell command>: in the sandbox, as a terminal would run it
+    local envs=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
+    if [ "${1:-}" = "--" ]; then shift; fi
+    ( cd "$CUR_SB" && env -i HOME="$CUR_SB" PATH="$CUR_SB/bin:/usr/bin:/bin" STUB_DIR="$CUR_SB" \
+          TMPDIR="$CUR_SB/tmp" MB_TTY="$CUR_SB/tty" ${envs[@]+"${envs[@]}"} "$BASH" -c "$1" >"$CUR_SB/out.txt" 2>&1 )
+    echo $? > "$CUR_SB/rc.txt"
+}
+install_sandbox
+printf 'an answer typed at the terminal\n' > "$CUR_SB/tty"
+run_install FAKE_RC=5 -- '{ cat install.sh; echo "echo REST-OF-THE-PIPE"; } | RSO_GIT_REF=v9.9.9 bash -s -- --standalone --only 90'
+check "piped, with options and a variable: the bootstrap gets both, and the terminal as its input" \
+    eval 'grep -qxF "args: [--standalone] [--only] [90]" "$CUR_SB/bootstrap_ran.txt" && grep -qxF "ref: v9.9.9" "$CUR_SB/bootstrap_ran.txt" && grep -qxF "stdin: an answer typed at the terminal" "$CUR_SB/bootstrap_ran.txt"'
+check "... its status is the line's, nothing after install.sh's last line runs, and the temporary file is gone" \
+    eval 'rc_is 5 && out_hasnt "REST-OF-THE-PIPE" && test -z "$(ls -A "$CUR_SB/tmp")"'
+check "... and it was downloaded at the pinned commit" \
+    event "https://raw.githubusercontent.com/JConeLab/morebees-installer/$FAKE_COMMIT/bootstrap.sh"
+done_sb
+install_sandbox
+run_install -- '{ cat install.sh; echo "the rest of the pipe"; } | bash'
+check "no terminal: the bootstrap reads nothing, not the rest of the pipe, and runs with no options" \
+    eval 'rc_is 0 && grep -qxF "args:" "$CUR_SB/bootstrap_ran.txt" && grep -qxF "stdin: <nothing>" "$CUR_SB/bootstrap_ran.txt"'
+done_sb
+install_sandbox
+printf 'echo tampered\n' >> "$CUR_SB/raw/$FAKE_COMMIT/bootstrap.sh"
+run_install -- 'cat install.sh | bash'
+check "a download that does not match the pin: exit 1, it says so, and nothing ran" \
+    eval 'rc_is 1 && out_has "does not match its pinned SHA-256; nothing was run." && test ! -e "$CUR_SB/bootstrap_ran.txt" && test -z "$(ls -A "$CUR_SB/tmp")"'
+done_sb
+install_sandbox
+rm "$CUR_SB/raw/$FAKE_COMMIT/bootstrap.sh"
+run_install -- 'cat install.sh | bash'
+check "a download that fails: exit 1, it says so, and nothing ran" \
+    eval 'rc_is 1 && out_has "could not download bootstrap.sh at commit 0123456; nothing was run." && test ! -e "$CUR_SB/bootstrap_ran.txt"'
+done_sb
+install_sandbox
+size="$(wc -c <"$CUR_SB/install.sh" | tr -d ' ')"
+# The last line, { main "$@"; exit $?; }, is 24 bytes with its newline: cut
+# before it, after "{ main ", after "{ main "$@"; ", and before its brace.
+for n in 200 800 $((size - 24)) $((size - 17)) $((size - 11)) $((size - 2)); do
+    : > "$CUR_SB/events.log"
+    run_install -- "head -c $n install.sh | bash"
+    check "install.sh cut short at $n of $size bytes: nothing downloaded and nothing run" \
+        eval 'no_event "curl" && test ! -e "$CUR_SB/bootstrap_ran.txt"'
+done
 done_sb
 
 echo

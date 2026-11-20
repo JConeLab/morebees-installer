@@ -8,20 +8,41 @@ Ubuntu Terminal PC or a Raspberry Pi.
 Paste this line into a terminal on the computer you are setting up:
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/install.sh | bash
+```
+
+The line runs `install.sh` from this repository's `main` branch. It downloads
+`bootstrap.sh` at one fixed commit, checks it against its SHA-256 and runs it
+only when the check passes. `main` changes only through a pull request with green
+CI, and a new bootstrap reaches people only when the pin in `install.sh` moves
+(see [Releasing the bootstrap](#releasing-the-bootstrap)).
+
+To pass options, put them after `bash -s --`; to set a variable, put it before
+`bash`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/install.sh | bash -s -- --standalone --only 90
+curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/install.sh | RSO_GIT_REF=v0.5.0 bash
+```
+
+Below, *the install line with `--only 90`* means the line with that option
+added this way.
+
+### Check it yourself
+
+This longer line reads nothing from `main`. It downloads `bootstrap.sh` at the
+pinned commit itself, checks it against the SHA-256 written into the line, and
+runs it only when the check passes:
+
+```sh
 mb="$(mktemp)" && curl -fsSL -o "$mb" https://raw.githubusercontent.com/JConeLab/morebees-installer/6a034382e1749009fd15d781b45dfcb63d45379e/bootstrap.sh && echo "1c937f12069bca11af434e3e965d27260300719a36e4b2aa7aeda33fc6057405  $mb" | sha256sum -c --quiet - && bash "$mb"
 ```
 
-The line downloads `bootstrap.sh` at one fixed commit of this repository, checks
-it against its SHA-256 and runs it only when the check passes. Whatever is pushed
-to this repository later, the line runs exactly the file it names: commit
-`6a034382e1749009fd15d781b45dfcb63d45379e`, SHA-256
-`1c937f12069bca11af434e3e965d27260300719a36e4b2aa7aeda33fc6057405`. A new
-bootstrap reaches people only when this pin moves (see
-[Releasing the bootstrap](#releasing-the-bootstrap)).
-
-To pass options, put them after `bash "$mb"` at the end of the line, for example
-`bash "$mb" --standalone --only 90`. To install a particular release, put the
-variable before it: `RSO_GIT_REF=v0.5.0 bash "$mb"`.
+Whatever is pushed to this repository later, the line runs exactly the file it
+names: commit `6a034382e1749009fd15d781b45dfcb63d45379e`, SHA-256
+`1c937f12069bca11af434e3e965d27260300719a36e4b2aa7aeda33fc6057405`. To pass options, put them after
+`bash "$mb"` at the end of the line, for example `bash "$mb" --standalone --only 90`;
+to set a variable, put it before: `RSO_GIT_REF=v0.5.0 bash "$mb"`.
 
 The application repository is **private**. On a new computer the bootstrap:
 
@@ -144,8 +165,7 @@ any of them, the bootstrap:
   added, and the undo command on a line of its own;
 - **otherwise asks**, and the answer is No unless you type `y`. With no terminal
   to ask on, or with `--non-interactive`, it asks nothing and changes nothing;
-  `--add-nvme-power-settings` at the end of the command adds them without
-  asking.
+  the install line with `--add-nvme-power-settings` adds them without asking.
 
 A root filesystem on LVM or LUKS over an NVMe drive counts as on that drive (the
 bootstrap reads the device stack with `lsblk`). On an SD card, a USB drive, any
@@ -248,8 +268,8 @@ Bootstrap flags, for a Raspberry Pi 5 that starts from an NVMe drive (see
 [A Raspberry Pi 5 that starts from an NVMe drive](#a-raspberry-pi-5-that-starts-from-an-nvme-drive)):
 
 - `--add-nvme-power-settings` adds the NVMe power settings without asking, also
-  when there is no terminal to ask on, for example
-  `bash "$mb" --add-nvme-power-settings`. When the line cannot take them (one it
+  when there is no terminal to ask on, for example the install line with
+  `--add-nvme-power-settings`. When the line cannot take them (one it
   will not read, another value for one of them, or a bare `--`), the run asks
   whether to go on without them, and otherwise stops with status 3, as for a
   drive known to disconnect.
@@ -264,17 +284,18 @@ The two together are refused, with nothing changed (status 3).
 Wizard flags (Terminal PC): `--skip-taskpi`, `--skip-ml`, `--include-standalone`,
 `--dev-mode` (skip rig-subnet networking on computers without the second network
 port), `--non-interactive`. For example, a Terminal PC without the rig network:
-`bash "$mb" --skip-taskpi --skip-ml --dev-mode`; the full lab:
-`bash "$mb" --start-rig-id 01`.
+the install line with `--skip-taskpi --skip-ml --dev-mode`; the full lab: with
+`--start-rig-id 01`.
 
 Standalone-Pi flags: `--only <phases>`, `--skip-phase <phase>`, `--dry-run`,
 `--verbose`, `--non-interactive`, and on releases that can reinstall,
 `--reinstall keep|delete`, `--confirm-delete=<name>`, `--inventory`,
 `--allow-older-release`. For example, to re-run only the DAQ HAT library phase:
-`bash "$mb" --standalone --only 20`. Phases go by number; names (`daqhats`,
+the install line with `--standalone --only 20`. Phases go by number; names (`daqhats`,
 `camera`) work with installers from v0.5.0-rc.1 on.
 
-Environment variables (put them before `bash "$mb"`):
+Environment variables (put them before `bash` in the install line, or before
+`bash "$mb"` in the long one):
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -340,18 +361,24 @@ true: the deploy key reached GitHub during the run, and the app runs from
 
 ## Security notes
 
-- The one-liner is pinned to a commit and checks the file's SHA-256 before it
-  runs, so a later change to this repository cannot change what the line runs.
+- `install.sh` runs `bootstrap.sh` only at the pinned commit, and only after
+  checking its SHA-256. The install line reads `install.sh` from `main`, which
+  changes only through a pull request with green CI (a ruleset on `main`); the
+  long line in [Check it yourself](#check-it-yourself) reads nothing from
+  `main`, so a later change to this repository cannot change what it runs.
 - This script contains **no secrets** and never asks you to paste a token into a
   command line. Authentication is GitHub's official device flow through the `gh`
   CLI.
-- The whole script runs inside a `main()` called on the last line, so a truncated
-  download can never run half a script.
+- `install.sh` and `bootstrap.sh` each run inside a `main()` called on their last
+  line, so a download cut short can never run half a script. `install.sh`, read
+  by bash as it arrives, calls it inside braces, which bash reads whole first, so
+  even a cut inside that line runs nothing.
 - The deploy key left on the computer is **read-only** and scoped to the single
   app repository; revoke it at any time under the app repository's
   *Settings*, *Deploy keys*.
-- To read the script before running it, run the first part of the one-liner, then
-  `less "$mb"`, then `bash "$mb"`.
+- To read the scripts before running them, open `install.sh`
+  (`curl -fsSL https://raw.githubusercontent.com/JConeLab/morebees-installer/main/install.sh | less`),
+  or run the first part of the long line, then `less "$mb"`, then `bash "$mb"`.
 
 ## Requirements
 
@@ -371,16 +398,18 @@ true: the deploy key reached GitHub during the run, and the app runs from
   Pi 5 on NVMe any run that would change the boot line or advise a restart,
   found a MoreBees window, a task, the hardware setup, or a camera session. Let
   it finish or close it, then run the command again.
-- **`sha256sum: WARNING: 1 computed checksum did NOT match`**: the download is not
-  the pinned file. Nothing was run. Copy the line again from this README.
+- **"the downloaded bootstrap.sh does not match its pinned SHA-256"** (the install
+  line) or **`sha256sum: WARNING: 1 computed checksum did NOT match`** (the long
+  line): the download is not the pinned file, and nothing was run. Run the line
+  again; if it keeps failing, copy it again from this README.
 - **A Pi 5's NVMe drive disconnects** (`nvme nvme0: controller is down` in
   `journalctl -k`, and the Pi can no longer write to its disk): restart the Pi.
   If the bootstrap has not yet said "MoreBees is already installed on this Pi",
-  run the one-liner again with `--add-nvme-power-settings` at the end, or answer
+  run the install line again with `--add-nvme-power-settings`, or answer
   `y` when the bootstrap asks: it adds the NVMe power settings to the boot line
   and stops with status 5; restart the Pi again and run the same command once
-  more. Once it says so, close MoreBees, then run the one-liner with
-  `--only 10 --add-nvme-power-settings` at the end: the bootstrap adds the
+  more. Once it says so, close MoreBees, then run the install line with
+  `--only 10 --add-nvme-power-settings`: the bootstrap adds the
   settings and stops with status 5 before phase 10 runs, so nothing is
   reinstalled, and after the restart nothing more is needed. When the line has
   them already, nothing is added and phase 10 (the system packages) runs again,
@@ -398,8 +427,9 @@ boot ID, `lsblk`, `sha256sum` (GNU's `-c --quiet`, which macOS lacks, so that th
 undo command runs as printed) and kernel log for the NVMe check, and real git
 against a small
 stand-in for the app repository (Linux or macOS; it needs git and bash). No test
-reads or changes the computer it runs on. Every shell file must be clean under
-ShellCheck 0.11.0: `shellcheck bootstrap.sh scripts/*.sh tests/*.sh`.
+reads or changes the computer it runs on; `install.sh` runs there too, against a
+stand-in `curl` and a stand-in bootstrap. Every shell file must be clean under
+ShellCheck 0.11.0: `shellcheck *.sh scripts/*.sh tests/*.sh`.
 `.github/workflows/ci.yml` runs both on every pull request and on every push to
 `main`.
 
@@ -418,13 +448,14 @@ A commit cannot contain its own hash, so the pin always follows the code:
 
 1. Merge the bootstrap change into `main` through a pull request with green CI.
 2. On a new branch from `main`, run `scripts/pin.sh <the merged commit>`. It
-   rewrites every pinned URL in this README and the SHA-256 of `bootstrap.sh` at
-   that commit; `scripts/pin.sh --check` confirms the result.
+   writes that commit and the SHA-256 of `bootstrap.sh` there into `install.sh`
+   and into this README's long line; `scripts/pin.sh --check` confirms the
+   result, and that the two pins agree.
 3. Open a pull request titled `release: pin <short sha>` with only that change,
-   and merge it. From then on the one-liner runs the new bootstrap.
+   and merge it. From then on both lines run the new bootstrap.
 
 Between steps 1 and 3 this README already describes the new bootstrap while the
-line still runs the previous one, so keep that window short.
+lines still run the previous one, so keep that window short.
 
 An older pin must keep working with newer app releases, because some people still
 copy an old line. To undo a release, pin the previous commit again.
