@@ -570,6 +570,12 @@ _run_installer_cmd() {
 
 run_installer() {
     BOOTSTRAP_STEP="run-installer"
+    # sudo's env_reset drops the operator's environment, so a setting the
+    # installers read goes on sudo's command line, as RSO_GIT_REF does, and only
+    # when it is set: RSO_KEEP_BUILD_CLONE=1 keeps ~/projects/RenAndStimPi,
+    # which both installers remove once the release in ~/rso works.
+    local keep=()
+    [[ -z "${RSO_KEEP_BUILD_CLONE:-}" ]] || keep=("RSO_KEEP_BUILD_CLONE=$RSO_KEEP_BUILD_CLONE")
     echo
     if [[ "$ROLE" == "standalone" ]]; then
         INSTALLER_LOG="$STANDALONE_LOG"
@@ -580,13 +586,13 @@ run_installer() {
         # Pi's SD card). The blue-green layout is adopted from this tree, after
         # which the app runs from ~/rso/current and this location is incidental.
         # Run as a child (NOT exec): the closing lines come after it.
-        _run_installer_cmd sudo RSO_GIT_REF="$REF" RSO_INSTALL_DIR="$APP_DIR" \
+        _run_installer_cmd sudo RSO_GIT_REF="$REF" RSO_INSTALL_DIR="$APP_DIR" ${keep[@]+"${keep[@]}"} \
             bash "$APP_DIR/$STANDALONE_ENTRY" "$@"
     else
         INSTALLER_LOG="$WIZARD_LOG"
         info "handing off to the MoreBees lab setup wizard (sudo password may be requested)…"
         echo
-        _run_installer_cmd sudo RSO_GIT_REF="$REF" bash "$APP_DIR/rso_core/tools/rso_deploy_wizard.sh" "$@"
+        _run_installer_cmd sudo RSO_GIT_REF="$REF" ${keep[@]+"${keep[@]}"} bash "$APP_DIR/rso_core/tools/rso_deploy_wizard.sh" "$@"
     fi
 }
 
@@ -628,9 +634,18 @@ _closing_update_line() {
     elif [[ "$origin" != "git@$DEPLOY_ALIAS:"* ]]; then
         warn "The release in ~/rso/current does not fetch through this computer's deploy key ($origin),"
         warn "so updates inside the app need a GitHub sign-in."
+        _key_setup_line
     else
         warn "The deploy key did not reach GitHub in this run, so updates inside the app may not work yet."
+        _key_setup_line
     fi
+}
+
+_key_setup_line() {
+    # The command that sets the key up for the release the app runs from, when
+    # that release has it.
+    [[ -f "$CUR/scripts/setup_terminal_deploy_key.sh" ]] || return 0
+    warn "Set the key up with: bash ~/rso/current/scripts/setup_terminal_deploy_key.sh --repo ~/rso/current"
 }
 
 _installer_failed() {
@@ -2208,7 +2223,10 @@ new_install() {
     github_signin
     resolve_release_ref
     ensure_app_clone
-    provision_deploy_key "$APP_DIR"
+    # The command to try the key again names the release, not this checkout:
+    # both installers remove the checkout once the release in ~/rso works.
+    provision_deploy_key "$APP_DIR" \
+        "bash ~/rso/current/scripts/setup_terminal_deploy_key.sh --repo ~/rso/current (once the install has finished)"
     if [[ "$ROLE" == "standalone" && "$SSH_VERIFIED" == 1 ]]; then
         # The standalone installer needs no GitHub credentials once origin is
         # the deploy key (its git runs through origin), so the token leaves now

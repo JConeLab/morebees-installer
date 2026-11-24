@@ -320,6 +320,7 @@ fi
     echo "release=@TAG@"
     echo "RSO_GIT_REF=${RSO_GIT_REF-<unset>}"
     echo "RSO_INSTALL_DIR=${RSO_INSTALL_DIR-<unset>}"
+    echo "RSO_KEEP_BUILD_CLONE=${RSO_KEEP_BUILD_CLONE-<unset>}"
     echo "MB_REINSTALL_SOURCE=${MB_REINSTALL_SOURCE-<unset>}"
     echo "PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE-<unset>}"
     for a in "$@"; do echo "arg=$a"; done
@@ -343,9 +344,11 @@ if [ "${STUB_CUT_OUTPUT:-0}" = 1 ]; then
     done
 fi
 if [ "${STUB_MAKE_LAYOUT:-0}" = 1 ]; then
-    # What phase 70 leaves behind: ~/rso/current with the checkout's origin.
+    # What phase 70 leaves behind: ~/rso/current with the checkout's origin and
+    # scripts, as its copy of the checkout has them.
     rel="$HOME/rso/releases/@TAG@"
-    mkdir -p "$rel"
+    mkdir -p "$rel/scripts"
+    cp "$RSO_INSTALL_DIR/scripts/setup_terminal_deploy_key.sh" "$rel/scripts/"
     git -C "$rel" init -q
     git -C "$rel" remote add origin "$(git -C "$RSO_INSTALL_DIR" config --get remote.origin.url)"
     ln -sfn "$rel" "$HOME/rso/current"
@@ -358,6 +361,7 @@ cat > "$TEMPLATES/wizard" <<'EOF'
 # stand-in for rso_core/tools/rso_deploy_wizard.sh, release @TAG@
 {
     echo "wizard=$0"
+    echo "RSO_KEEP_BUILD_CLONE=${RSO_KEEP_BUILD_CLONE-<unset>}"
     for a in "$@"; do echo "arg=$a"; done
 } > "$STUB_DIR/installer_call.txt"
 echo "wizard ran" >> "$STUB_DIR/events.log"
@@ -641,6 +645,7 @@ check "sign-out says the token stays valid until revoked" \
 check "installer got the release and the checkout" \
     eval 'call_has "RSO_GIT_REF=v0.4.9" && call_has "RSO_INSTALL_DIR=$CUR_SB/home/projects/RenAndStimPi"'
 check "no --standalone forwarded" eval '! grep -q "^arg=--standalone$" "$CUR_SB/installer_call.txt"'
+check "RSO_KEEP_BUILD_CLONE not passed when unset" call_has "RSO_KEEP_BUILD_CLONE=<unset>"
 check "closing lines: installed, updates in the app" \
     eval 'out_has "MoreBees v0.4.9 is installed." && out_has "Future updates arrive inside the app."'
 done_sb
@@ -653,6 +658,18 @@ check "exit 0" rc_is 0
 check "gh auth logout is not run against an environment token" no_event "gh auth logout"
 check "says the token came from the environment" out_has "came from GH_TOKEN or GITHUB_TOKEN"
 check "gh's credential-helper lines still removed" gh_helpers_gone
+done_sb
+
+echo "7c. RSO_KEEP_BUILD_CLONE reaches both installers through sudo's bare environment"
+fresh_sandbox
+run_bootstrap RSO_KEEP_BUILD_CLONE=1 -- --standalone
+check "exit 0" rc_is 0
+check "the standalone installer gets RSO_KEEP_BUILD_CLONE=1" call_has "RSO_KEEP_BUILD_CLONE=1"
+done_sb
+fresh_sandbox
+run_bootstrap RSO_KEEP_BUILD_CLONE=1 -- --terminal
+check "exit 0" rc_is 0
+check "the wizard gets RSO_KEEP_BUILD_CLONE=1" call_has "RSO_KEEP_BUILD_CLONE=1"
 done_sb
 
 echo "8. terminal: the session stays until the wizard has finished"
@@ -675,6 +692,12 @@ run_bootstrap STUB_MAKE_LAYOUT=1 STUB_GH_DEPLOYKEY_RC=1 -- --standalone
 check "key not verified: session kept, no update promise" \
     eval 'out_has "keeping your GitHub session" && out_hasnt "Future updates arrive inside the app."'
 check "key not verified: no sign-out before the installer" no_event "gh auth logout"
+check "key not verified: the command to try again names the release, which outlives the checkout" \
+    out_has "bash ~/rso/current/scripts/setup_terminal_deploy_key.sh --repo ~/rso/current (once the install has finished)"
+check "key not verified: no command names the checkout, which the install removes" \
+    out_hasnt "projects/RenAndStimPi/scripts/setup_terminal_deploy_key.sh"
+check "key not verified: the closing lines give the command" \
+    out_has "Set the key up with: bash ~/rso/current/scripts/setup_terminal_deploy_key.sh --repo ~/rso/current"
 done_sb
 
 echo "10. the installer's exit status, said plainly and passed on"

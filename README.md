@@ -306,6 +306,7 @@ Environment variables (put them before `bash` in the install line, or before
 | `RSO_APP_REPO` | app repository slug | `JConeLab/RenAndStimPi` |
 | `RSO_GIT_REF` | tag, branch or SHA to install (a reinstall takes release tags only) | latest stable `vX.Y.Z` |
 | `GH_TOKEN` | pre-issued token for fully headless installs | none (browser device flow) |
+| `RSO_KEEP_BUILD_CLONE` | `1` keeps `~/projects/RenAndStimPi`, which the installer removes at the end of an install once the release in `~/rso` works (the standalone installer from v0.5.1, the lab setup wizard's phase 10b); passed to the installer on `sudo`'s command line | unset |
 
 ## How a run ends
 
@@ -324,7 +325,10 @@ stops before the installer runs, and says what it means:
 
 The closing line "Future updates arrive inside the app" appears only when it is
 true: the deploy key reached GitHub during the run, and the app runs from
-`~/rso/current`, which fetches through that key.
+`~/rso/current`, which fetches through that key. Otherwise the closing lines say
+which, and give the command that sets the key up for `~/rso/current`. The
+installers remove `~/projects/RenAndStimPi` once the release works, so the
+command never names it.
 
 ## Logs
 
