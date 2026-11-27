@@ -133,7 +133,7 @@ when the Pi's own deploy key cannot fetch the release it needs.
   run ends; when the installer, which runs as root, left files there that you
   cannot remove, the bootstrap removes the copy with sudo.
 - Releases whose installer cannot keep or delete data (the first that can is
-  planned for v0.5.1) are not reinstalled: the bootstrap explains, lists the
+  planned for v0.5.2) are not reinstalled: the bootstrap explains, lists the
   newest release tags and stops with nothing changed. Your recorded sessions are
   in `~/rso/shared/data`: never remove `~/rso`.
 - A computer whose `/etc/rso/role` names another role (a Terminal PC, for
