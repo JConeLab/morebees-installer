@@ -22,8 +22,8 @@
 # Test seam: MB_TTY, the terminal (/dev/tty), as in bootstrap.sh.
 set -Eeuo pipefail
 
-MB_PIN_COMMIT="84467f902362f6598991eb3764b03d8ba7a79124"
-MB_PIN_SHA256="67aabbebad48c9ac1ebac964fb694f43af773bd090a90b5b5e7960112bf8e655"
+MB_PIN_COMMIT="6592da81f5670443fe7348fa0b600b6b7cb97721"
+MB_PIN_SHA256="bbc10e74c126a60658d7c17b96a6fd4c1a84e923cb922ddc0f22f8c2d91c601d"
 
 MB_TMP=""
 
